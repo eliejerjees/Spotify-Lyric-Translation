@@ -2,14 +2,16 @@
 __pycache__/
 *.pyc
 
-# Virtual environment
+# Virtual environments
 .venv/
+venv/
 
 # Environment variables / secrets
 .env
-
-# OS junk
-.DS_Store
+.env.*
 
 # Google Cloud credentials
 gcloud-key.json
+
+# OS junk
+.DS_Store
