@@ -3,7 +3,9 @@ from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 import os, secrets, hashlib, base64, requests, time
 from dotenv import load_dotenv
 from lrc_parser import parse_lrc
+from sync_engine import current_line_index, window
 
+# Load environment variables from .env file
 load_dotenv()
 
 # Helper function to generate a base64-url-encoded string
@@ -282,4 +284,86 @@ def lyrics_current(request: Request):
         "source": "lrclib",
         "isSynced": len(lines) > 0,
         "lines": [ln.__dict__ for ln in lines],
+    }
+
+# Synced Lyrics with Current Line
+@app.get("/lyrics/current/synced")
+def lyrics_current_synced(request: Request):
+    # reuse your existing endpoints by calling the functions directly is messy;
+    # simplest is to re-run the same logic:
+    access_token = request.cookies.get("access_token")
+    if not access_token:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    # 1) current track from Spotify
+    r = requests.get(
+        "https://api.spotify.com/v1/me/player/currently-playing",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+
+    if r.status_code == 204:
+        return {"isPlaying": False, "progressMs": None, "track": None, "isSynced": False, "activeIndex": -1, "lines": []}
+
+    if not r.ok:
+        return JSONResponse({"error": "Spotify API error", "details": r.text}, status_code=r.status_code)
+
+    data = r.json()
+    progress_ms = data.get("progress_ms")
+    item = data.get("item")
+    if not item or item.get("type") != "track":
+        return JSONResponse({"error": "No track item"}, status_code=400)
+
+    title = item.get("name")
+    artists = item.get("artists") or []
+    artist = artists[0].get("name") if artists else None
+    album = (item.get("album") or {}).get("name")
+    duration_ms = item.get("duration_ms")
+
+    if not title or not artist or not album or not duration_ms:
+        return JSONResponse({"error": "Missing artist/title/album/duration"}, status_code=400)
+
+    # 2) LRCLIB signature fetch
+    lr = requests.get(
+        "https://lrclib.net/api/get",
+        params={
+            "artist_name": artist,
+            "track_name": title,
+            "album_name": album,
+            "duration": round(duration_ms / 1000),
+        },
+        timeout=15,
+    )
+
+    if not lr.ok:
+        return JSONResponse({"error": "LRCLIB error", "details": lr.text}, status_code=lr.status_code)
+
+    payload = lr.json()
+    lrc_text = payload.get("syncedLyrics")
+
+    if not lrc_text:
+        return {
+            "isPlaying": bool(data.get("is_playing")),
+            "progressMs": progress_ms,
+            "track": {"artist": artist, "title": title, "album": album},
+            "isSynced": False,
+            "activeIndex": -1,
+            "lines": [],
+        }
+
+    parsed = parse_lrc(lrc_text)
+    lines = [ln.__dict__ for ln in parsed]
+    t_list = [ln["t_ms"] for ln in lines]
+
+    idx = current_line_index(t_list, progress_ms)
+    w = window(lines, idx, before=2, after=6)
+
+    return {
+        "isPlaying": bool(data.get("is_playing")),
+        "progressMs": progress_ms,
+        "track": {"artist": artist, "title": title, "album": album},
+        "isSynced": True,
+        "activeIndex": idx,
+        "activeLine": None if idx < 0 else lines[idx],
+        "window": w,
     }
