@@ -2,6 +2,7 @@ from fastapi import FastAPI, Response, Request
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 import os, secrets, hashlib, base64, requests, time
 from dotenv import load_dotenv
+from lrc_parser import parse_lrc
 
 load_dotenv()
 
@@ -197,3 +198,88 @@ def now_page():
   </body>
 </html>
 """
+
+@app.get("/debug/parse-lrc")
+def debug_parse_lrc():
+    sample = """
+    [00:01.00] First line
+    [00:05.40] Second line
+    [00:10.12] Third line
+    """
+    lines = parse_lrc(sample)
+    return {
+        "count": len(lines),
+        "lines": [ln.__dict__ for ln in lines],
+    }
+
+@app.get("/lyrics/current")
+def lyrics_current(request: Request):
+    access_token = request.cookies.get("access_token")
+
+    if not access_token:
+        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+
+    r = requests.get(
+        "https://api.spotify.com/v1/me/player/currently-playing",
+        headers = {"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+
+    if r.status_code == 204:
+        return {"error": "Nothing playing"} 
+    
+    if not r.ok:
+        return JSONResponse(
+            {"error": "Spotify API error", "details": r.text},
+            status_code = r.status_code
+        )
+    
+    data = r.json()
+    item = data.get("item")
+    if not item or item.get("type") != "track":
+        return JSONResponse(
+            {"error": "No track playing"},
+            status_code=400,
+        )
+    
+    title = item.get("name")
+    artists = item.get("artists") or []
+    artist = artists[0].get("name") if artists else None
+    album = (item.get("album") or {}).get("name")
+    duration_ms = item.get("duration_ms")
+
+    if not title or not artist or not album or not duration_ms:
+        return JSONResponse({"error": "Missing artist/title/album/duration"}, status_code=400)
+    
+    # fetch LRC from LRCLIB 
+    lr = requests.get(
+        "https://lrclib.net/api/get",
+        params={
+            "artist_name": artist,
+            "track_name": title,
+            "album_name": album,
+            "duration": round(duration_ms / 1000)
+        },
+        timeout=15,
+    )
+
+    if not lr.ok:
+        return JSONResponse(
+            {"error": "LRCLIB API error", "details": lr.text},
+            status_code=500,
+        )
+    
+    payload = lr.json()
+    lrc_text = payload.get("syncedLyrics") or payload.get("plainLyrics")
+
+    if not lrc_text:
+        return {"track": {"artist": artist, "title": title, "album": album}, "isSynced": False, "lines": []}
+    
+    # Parse LRC
+    lines = parse_lrc(lrc_text)
+    return {
+        "track": {"artist": artist, "title": title, "album": album},
+        "source": "lrclib",
+        "isSynced": len(lines) > 0,
+        "lines": [ln.__dict__ for ln in lines],
+    }
