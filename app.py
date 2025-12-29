@@ -579,11 +579,19 @@ def lyrics_current_synced(request: Request):
     if not title or not artist or not album or not duration_ms:
         return JSONResponse({"error": "Missing artist/title/album/duration"}, status_code=400)
 
-    track_sig = (artist, title, album, round(duration_ms / 1000))
+    # Identify track
+    track_id = item.get("id")
+    if not track_id:
+        return JSONResponse({"error": "Missing track id"}, status_code=400)
+    
+    #  Use duration in seconds for better cache hits
+    duration_s = round(duration_ms / 1000)
+    track_sig = (track_id, duration_s)  # use this everywhere for caches
     now = int(time.time())
 
     # 1) Get original parsed lines from LRCLIB (cached)
     cached = LRCLIB_CACHE.get(track_sig)
+
     if cached and (now - cached["fetched_at"] < LRCLIB_TTL_SECONDS):
         base_lines = cached["lines"]
     else:
@@ -593,7 +601,7 @@ def lyrics_current_synced(request: Request):
                 "artist_name": artist,
                 "track_name": title,
                 "album_name": album,
-                "duration": round(duration_ms / 1000),
+                "duration": duration_s
             },
             timeout=15,
         )
@@ -645,11 +653,19 @@ def lyrics_current_synced(request: Request):
         return resp_out
 
     # 2) Translate once per track+lang (cached)
-    t_key = (*track_sig, lang)
+    t_key = (track_sig, lang)
     t_cached = TRANSLATION_CACHE.get(t_key)
+
     if t_cached and (now - t_cached["fetched_at"] < TRANSLATION_TTL_SECONDS):
         translated_list = t_cached["translated"]
     else:
+        from translator import translate_lines
+        originals = [ln.get("original", "") for ln in base_lines]
+        translated_list = translate_lines(originals, target_lang=lang)
+        TRANSLATION_CACHE[t_key] = {"translated": translated_list, "fetched_at": now}
+
+    # Guard: if lengths don't match (LRCLIB changed, parser changed, etc.), retranslate
+    if len(translated_list) != len(base_lines):
         from translator import translate_lines
         originals = [ln.get("original", "") for ln in base_lines]
         translated_list = translate_lines(originals, target_lang=lang)
