@@ -6,6 +6,26 @@ from lrc_parser import parse_lrc
 from sync_engine import current_line_index, window
 from typing import Optional, Tuple
 
+# Load environment variables early
+load_dotenv()
+
+app = FastAPI()
+
+# =========================
+# CACHES
+# =========================
+LRCLIB_CACHE = {}  # key -> {"lines": [...], "fetched_at": int}
+LRCLIB_TTL_SECONDS = 60 * 60  # 1 hour
+
+TRANSLATION_CACHE = {}  # key -> {"translated": [str], "fetched_at": int}
+TRANSLATION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+
+# =========================
+# HELPERS
+# =========================
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
 def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict]]:
     """
     Returns (access_token, cookie_updates).
@@ -20,10 +40,13 @@ def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict]
         return None, None
 
     # still valid (30s buffer)
-    if time.time() < int(expires_at) - 30:
-        return access_token, None
+    try:
+        if time.time() < int(expires_at) - 30:
+            return access_token, None
+    except ValueError:
+        # bad cookie value; force refresh path
+        pass
 
-    # refresh
     resp = requests.post(
         "https://accounts.spotify.com/api/token",
         data={
@@ -44,46 +67,223 @@ def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict]
 
     return new_access, {"access_token": new_access, "expires_at": new_expires_at}
 
-# Load environment variables from .env file
-load_dotenv()
+def set_cookie_updates(resp_out: JSONResponse, cookie_updates: Optional[dict]) -> None:
+    if not cookie_updates:
+        return
+    for k, v in cookie_updates.items():
+        resp_out.set_cookie(key=k, value=v, httponly=True, secure=False)
 
-# In-memory cache for LRCLIB responses
-LRCLIB_CACHE = {}  # key -> {"lines": [...], "fetched_at": int}
-LRCLIB_TTL_SECONDS = 60 * 60  # 1 hour
+# =========================
+# Karaoke Page
+# =========================
+@app.get("/karaoke", response_class=HTMLResponse)
+def karaoke_page():
+    return """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>LingualSync Karaoke</title>
+    <style>
+      body {
+        background: #000;
+        color: #fff;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+        margin: 0;
+        padding: 20px;
+      }
+      .topbar {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      select, input {
+        background: #111;
+        color: #fff;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      .track {
+        color: #1DB954;
+        margin: 8px 0 18px 0;
+        font-size: 14px;
+      }
+      .line {
+        padding: 10px 12px;
+        border-radius: 10px;
+        margin: 8px 0;
+        background: #0b0b0b;
+        border: 1px solid #111;
+        transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
+      }
+      .line.active {
+        background: #141414;
+        border-color: #1DB954;
+        transform: scale(1.02);
+      }
+      .orig {
+        font-size: 14px;
+        opacity: 0.75;
+        margin-bottom: 6px;
+      }
+      .trans {
+        font-size: 22px;
+        line-height: 1.25;
+      }
+      .status {
+        font-size: 13px;
+        opacity: 0.7;
+        margin-top: 12px;
+      }
+      .muted { opacity: 0.6; }
+      .error { color: #ff6b6b; }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <label class="muted">Language</label>
+      <select id="lang">
+        <option value="es">Spanish (es)</option>
+        <option value="fr">French (fr)</option>
+        <option value="ar">Arabic (ar)</option>
+        <option value="de">German (de)</option>
+        <option value="it">Italian (it)</option>
+        <option value="pt">Portuguese (pt)</option>
+        <option value="ja">Japanese (ja)</option>
+        <option value="ko">Korean (ko)</option>
+        <option value="zh-CN">Chinese (zh-CN)</option>
+      </select>
 
-TRANSLATION_CACHE = {}  # key -> {"translated": [str], "fetched_at": int}
-TRANSLATION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
+      <label class="muted">Poll ms</label>
+      <input id="poll" type="number" value="500" min="200" step="100" style="width: 90px;" />
+      <button id="apply" style="background:#1DB954;color:#000;border:0;border-radius:8px;padding:8px 12px;cursor:pointer;">
+        Apply
+      </button>
+    </div>
 
+    <div class="track" id="track">Loading…</div>
+    <div id="lines"></div>
+    <div class="status" id="status"></div>
 
-# Helper function to generate a base64-url-encoded string
-def b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode().rstrip("=") 
+    <script>
+      let timer = null;
+      let lastActiveKey = null;
 
-app = FastAPI() # creates an instance of the FastAPI application
+      function esc(s) {
+        return (s ?? "").toString()
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
 
-@app.get("/") # registers a handler for HTTP GET requests to the path "/"
-def root(): # defines the handler function for the root path
-    return { 
-        "app": "LingualSync",
-        "status": "ok"
-    }
-# returns a JSON response with application name and status
+      function render(payload) {
+        const trackEl = document.getElementById("track");
+        const linesEl = document.getElementById("lines");
+        const statusEl = document.getElementById("status");
 
-# Health Handling
+        if (!payload || payload.error) {
+          trackEl.innerHTML = "<span class='error'>Error</span>";
+          linesEl.innerHTML = "";
+          statusEl.textContent = payload?.details || payload?.error || "Unknown error";
+          return;
+        }
+
+        if (!payload.isPlaying || !payload.track) {
+          trackEl.textContent = "Not playing";
+          linesEl.innerHTML = "";
+          statusEl.textContent = "";
+          return;
+        }
+
+        const t = payload.track;
+        trackEl.textContent = `${t.artist} — ${t.title} (${t.album})`;
+
+        const lyrics = payload.lyrics;
+        if (!lyrics || !lyrics.isSynced) {
+          linesEl.innerHTML = "<div class='muted'>No synced lyrics available for this track.</div>";
+          statusEl.textContent = "";
+          return;
+        }
+
+        const active = lyrics.activeLine;
+        const activeKey = active ? active.t_ms : null;
+
+        // Build lines
+        const windowLines = lyrics.window || [];
+        let html = "";
+        for (const ln of windowLines) {
+          const isActive = (active && ln.t_ms === active.t_ms);
+          html += `
+            <div class="line ${isActive ? "active" : ""}">
+              <div class="orig">${esc(ln.original)}</div>
+              <div class="trans">${esc(ln.translated || "")}</div>
+            </div>
+          `;
+        }
+        linesEl.innerHTML = html;
+
+        // Simple "transition": scroll into view when active changes
+        if (activeKey !== null && activeKey !== lastActiveKey) {
+          lastActiveKey = activeKey;
+          const activeEl = document.querySelector(".line.active");
+          if (activeEl) activeEl.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
+
+        statusEl.textContent = `progressMs=${payload.progressMs} activeIndex=${lyrics.activeIndex}`;
+      }
+
+      async function tick() {
+        const lang = document.getElementById("lang").value;
+        try {
+          const r = await fetch(`/lyrics/current/synced?lang=${encodeURIComponent(lang)}`, { cache: "no-store" });
+          const data = await r.json();
+          render(data);
+        } catch (e) {
+          render({ error: "Fetch failed", details: String(e) });
+        }
+      }
+
+      function start() {
+        if (timer) clearInterval(timer);
+        const pollMs = Math.max(200, Number(document.getElementById("poll").value || 500));
+        tick();
+        timer = setInterval(tick, pollMs);
+      }
+
+      document.getElementById("apply").addEventListener("click", () => {
+        lastActiveKey = null; // reset scroll behavior
+        start();
+      });
+
+      // Start immediately
+      start();
+    </script>
+  </body>
+</html>
+"""
+
+# =========================
+# BASIC ENDPOINTS
+# =========================
+@app.get("/")
+def root():
+    return {"app": "LingualSync", "status": "ok"}
+
 @app.get("/health")
 def health():
-    return {
-        "ok": True
-    }
+    return {"ok": True}
 
-# Login Handling
+# =========================
+# AUTH (SPOTIFY OAUTH + PKCE)
+# =========================
 @app.get("/auth/login")
-def auth_login(response: Response):
+def auth_login(_: Response):
     verifier = b64url(secrets.token_bytes(32))
     challenge = b64url(hashlib.sha256(verifier.encode()).digest())
 
     scopes = "user-read-currently-playing user-read-playback-state"
-    
     url = (
         "https://accounts.spotify.com/authorize"
         f"?response_type=code"
@@ -95,11 +295,9 @@ def auth_login(response: Response):
     )
 
     redirect = RedirectResponse(url=url)
-    redirect.set_cookie(key = "pkce_verifier", value = verifier, httponly = True, secure = False)
-
+    redirect.set_cookie(key="pkce_verifier", value=verifier, httponly=True, secure=False)
     return redirect
 
-# Callback Handling
 @app.get("/auth/callback")
 def auth_callback(request: Request):
     code = request.query_params.get("code")
@@ -108,21 +306,19 @@ def auth_callback(request: Request):
 
     if error:
         return JSONResponse({"error": error}, status_code=400)
-    
     if not code:
         return JSONResponse({"error": "Missing code parameter"}, status_code=400)
-    
     if not verifier:
         return JSONResponse({"error": "Missing PKCE verifier"}, status_code=400)
-    
+
     token_resp = requests.post(
         "https://accounts.spotify.com/api/token",
-        data = {
+        data={
             "grant_type": "authorization_code",
             "code": code,
             "redirect_uri": os.environ["SPOTIFY_REDIRECT_URI"],
             "client_id": os.environ["SPOTIFY_CLIENT_ID"],
-            "code_verifier": verifier
+            "code_verifier": verifier,
         },
         timeout=15,
     )
@@ -132,37 +328,27 @@ def auth_callback(request: Request):
             {"error": "Token exchange failed", "details": token_resp.text},
             status_code=500,
         )
-    
-    tokens = token_resp.json()
 
+    tokens = token_resp.json()
     access_token = tokens["access_token"]
     refresh_token = tokens.get("refresh_token")
     expires_in = int(tokens.get("expires_in", 3600))
 
     resp = RedirectResponse(url="/")
-    resp.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=False,
-    )
+    resp.set_cookie(key="access_token", value=access_token, httponly=True, secure=False)
     if refresh_token:
-        resp.set_cookie(
-            key="refresh_token",
-            value=refresh_token,
-            httponly=True,
-            secure=False,
-        )
+        resp.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False)
     resp.set_cookie(
         key="expires_at",
-        value = str(int(time.time()) + expires_in),
+        value=str(int(time.time()) + expires_in),
         httponly=True,
         secure=False,
     )
-    
     return resp
 
-# Now Playing Handling
+# =========================
+# SPOTIFY: NOW PLAYING
+# =========================
 @app.get("/now-playing")
 def now_playing(request: Request):
     access_token, cookie_updates = ensure_access_token(request)
@@ -176,7 +362,10 @@ def now_playing(request: Request):
     )
 
     if r.status_code == 204:
-        return {"isPlaying": False, "track": None, "progressMs": None}
+        payload = {"isPlaying": False, "track": None, "progressMs": None}
+        resp_out = JSONResponse(payload)
+        set_cookie_updates(resp_out, cookie_updates)
+        return resp_out
 
     if not r.ok:
         return JSONResponse({"error": "Spotify API error", "details": r.text}, status_code=r.status_code)
@@ -195,18 +384,18 @@ def now_playing(request: Request):
         }
 
     payload = {
-    "isPlaying": bool(data.get("is_playing")),
-    "progressMs": data.get("progress_ms"),
-    "track": track,
-}
+        "isPlaying": bool(data.get("is_playing")),
+        "progressMs": data.get("progress_ms"),
+        "track": track,
+    }
 
     resp_out = JSONResponse(payload)
-    if cookie_updates:
-        for k, v in cookie_updates.items():
-            resp_out.set_cookie(key=k, value=v, httponly=True, secure=False)
+    set_cookie_updates(resp_out, cookie_updates)
     return resp_out
 
-# Now Page (HTML)    
+# =========================
+# DEBUG HTML POLL PAGE
+# =========================
 @app.get("/now", response_class=HTMLResponse)
 def now_page():
     return """
@@ -214,20 +403,19 @@ def now_page():
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>LingualSync Now Playing</title>
+    <title>LingualSync</title>
     <style>
-      body { 
-      background-color: black;
-      color: white;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; padding: 16px; }
-      pre { white-space: pre-wrap; word-break: break-word; 
-      background-color: #808080; padding: 16px; border-radius: 8px;
+      body {
+        background: black; color: white;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        padding: 16px;
       }
-      .muted { color: #1DB954; }
+      pre { white-space: pre-wrap; word-break: break-word; background: #333; padding: 16px; border-radius: 8px; }
+      .muted { color: #1DB954; margin-bottom: 8px; }
     </style>
   </head>
   <body>
-    <div class="muted">Polling <code>/lyrics/current/synced</code> every <span id="ms">1000</span>ms</div>
+    <div class="muted">Polling <code>/lyrics/current/synced?lang=es</code> every <span id="ms">1000</span>ms</div>
     <pre id="out">Loading...</pre>
 
     <script>
@@ -236,7 +424,7 @@ def now_page():
 
       async function tick() {
         try {
-          const r = await fetch("/lyrics/current/synced", { cache: "no-store" });
+          const r = await fetch("/lyrics/current/synced?lang=es", { cache: "no-store" });
           const data = await r.json();
           document.getElementById("out").textContent = JSON.stringify(data, null, 2);
         } catch (e) {
@@ -251,7 +439,9 @@ def now_page():
 </html>
 """
 
-# Lyrics Testing Endpoint
+# =========================
+# DEBUG: PARSE LRC
+# =========================
 @app.get("/debug/parse-lrc")
 def debug_parse_lrc():
     sample = """
@@ -260,42 +450,37 @@ def debug_parse_lrc():
     [00:10.12] Third line
     """
     lines = parse_lrc(sample)
-    return {
-        "count": len(lines),
-        "lines": [ln.__dict__ for ln in lines],
-    }
+    return {"count": len(lines), "lines": [ln.__dict__ for ln in lines]}
 
-# Lyrics for Current Track
+# =========================
+# LYRICS: CURRENT (RAW)
+# =========================
 @app.get("/lyrics/current")
 def lyrics_current(request: Request):
-    access_token = request.cookies.get("access_token")
-
+    access_token, cookie_updates = ensure_access_token(request)
     if not access_token:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
     r = requests.get(
         "https://api.spotify.com/v1/me/player/currently-playing",
-        headers = {"Authorization": f"Bearer {access_token}"},
+        headers={"Authorization": f"Bearer {access_token}"},
         timeout=15,
     )
 
     if r.status_code == 204:
-        return {"error": "Nothing playing"} 
-    
+        payload = {"error": "Nothing playing"}
+        resp_out = JSONResponse(payload)
+        set_cookie_updates(resp_out, cookie_updates)
+        return resp_out
+
     if not r.ok:
-        return JSONResponse(
-            {"error": "Spotify API error", "details": r.text},
-            status_code = r.status_code
-        )
-    
+        return JSONResponse({"error": "Spotify API error", "details": r.text}, status_code=r.status_code)
+
     data = r.json()
     item = data.get("item")
     if not item or item.get("type") != "track":
-        return JSONResponse(
-            {"error": "No track playing"},
-            status_code=400,
-        )
-    
+        return JSONResponse({"error": "No track playing"}, status_code=400)
+
     title = item.get("name")
     artists = item.get("artists") or []
     artist = artists[0].get("name") if artists else None
@@ -304,55 +489,55 @@ def lyrics_current(request: Request):
 
     if not title or not artist or not album or not duration_ms:
         return JSONResponse({"error": "Missing artist/title/album/duration"}, status_code=400)
-    
-    # fetch LRC from LRCLIB 
+
     lr = requests.get(
         "https://lrclib.net/api/get",
         params={
             "artist_name": artist,
             "track_name": title,
             "album_name": album,
-            "duration": round(duration_ms / 1000)
+            "duration": round(duration_ms / 1000),
         },
         timeout=15,
     )
 
     if not lr.ok:
-        return JSONResponse(
-            {"error": "LRCLIB API error", "details": lr.text},
-            status_code=500,
-        )
-    
-    payload = lr.json()
-    lrc_text = payload.get("syncedLyrics") or payload.get("plainLyrics")
+        return JSONResponse({"error": "LRCLIB API error", "details": lr.text}, status_code=lr.status_code)
+
+    payload_lr = lr.json()
+    lrc_text = payload_lr.get("syncedLyrics") or payload_lr.get("plainLyrics")
 
     if not lrc_text:
-        return {"track": {"artist": artist, "title": title, "album": album}, "isSynced": False, "lines": []}
-    
-    # Parse LRC
-    lines = parse_lrc(lrc_text)
-    return {
+        payload = {"track": {"artist": artist, "title": title, "album": album}, "isSynced": False, "lines": []}
+        resp_out = JSONResponse(payload)
+        set_cookie_updates(resp_out, cookie_updates)
+        return resp_out
+
+    parsed = parse_lrc(lrc_text)
+    lines = [ln.__dict__ for ln in parsed]
+
+    payload = {
         "track": {"artist": artist, "title": title, "album": album},
         "source": "lrclib",
         "isSynced": len(lines) > 0,
-        "lines": [ln.__dict__ for ln in lines],
+        "lines": lines,
     }
 
-# Synced Lyrics with Current Line
+    resp_out = JSONResponse(payload)
+    set_cookie_updates(resp_out, cookie_updates)
+    return resp_out
+
+# =========================
+# LYRICS: CURRENT (SYNCED + TRANSLATED)
+# =========================
 @app.get("/lyrics/current/synced")
 def lyrics_current_synced(request: Request):
-
-    from translator import translate_lines
-
-    # reuse your existing endpoints by calling the functions directly is messy;
-    # simplest is to re-run the same logic:
     access_token, cookie_updates = ensure_access_token(request)
     if not access_token:
         return JSONResponse({"error": "Not authenticated"}, status_code=401)
 
-    lang = request.query_params.get("lang", "es") # target translation language, default spanish
+    lang = request.query_params.get("lang", "es")
 
-    # 1) current track from Spotify
     r = requests.get(
         "https://api.spotify.com/v1/me/player/currently-playing",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -373,9 +558,7 @@ def lyrics_current_synced(request: Request):
             },
         }
         resp_out = JSONResponse(payload)
-        if cookie_updates:
-            for k, v in cookie_updates.items():
-                resp_out.set_cookie(key=k, value=v, httponly=True, secure=False)
+        set_cookie_updates(resp_out, cookie_updates)
         return resp_out
 
     if not r.ok:
@@ -396,13 +579,13 @@ def lyrics_current_synced(request: Request):
     if not title or not artist or not album or not duration_ms:
         return JSONResponse({"error": "Missing artist/title/album/duration"}, status_code=400)
 
-    # 2) LRCLIB fetch with cache (keyed by track signature)
-    cache_key = (artist, title, album, round(duration_ms / 1000))
+    track_sig = (artist, title, album, round(duration_ms / 1000))
     now = int(time.time())
 
-    cached = LRCLIB_CACHE.get(cache_key)
+    # 1) Get original parsed lines from LRCLIB (cached)
+    cached = LRCLIB_CACHE.get(track_sig)
     if cached and (now - cached["fetched_at"] < LRCLIB_TTL_SECONDS):
-        lines = cached["lines"]
+        base_lines = cached["lines"]
     else:
         lr = requests.get(
             "https://lrclib.net/api/get",
@@ -418,12 +601,11 @@ def lyrics_current_synced(request: Request):
         if not lr.ok:
             return JSONResponse({"error": "LRCLIB error", "details": lr.text}, status_code=lr.status_code)
 
-        payload = lr.json()
-        lrc_text = payload.get("syncedLyrics")
+        payload_lr = lr.json()
+        lrc_text = payload_lr.get("syncedLyrics")
 
         if not lrc_text:
-            LRCLIB_CACHE[cache_key] = {"lines": [], "fetched_at": now}
-
+            LRCLIB_CACHE[track_sig] = {"lines": [], "fetched_at": now}
             payload = {
                 "isPlaying": bool(data.get("is_playing")),
                 "progressMs": progress_ms,
@@ -436,39 +618,52 @@ def lyrics_current_synced(request: Request):
                     "window": [],
                 },
             }
-
             resp_out = JSONResponse(payload)
-            if cookie_updates:
-                for k, v in cookie_updates.items():
-                    resp_out.set_cookie(key=k, value=v, httponly=True, secure=False)
+            set_cookie_updates(resp_out, cookie_updates)
             return resp_out
 
         parsed = parse_lrc(lrc_text)
-        lines = [ln.__dict__ for ln in parsed]
+        base_lines = [ln.__dict__ for ln in parsed]
+        LRCLIB_CACHE[track_sig] = {"lines": base_lines, "fetched_at": now}
 
-        # Translation cache
-        t_key = (artist, title, album, round(duration_ms / 1000), lang)
-        now = int(time.time())
+    # If no synced lyrics, return normalized shape
+    if not base_lines:
+        payload = {
+            "isPlaying": bool(data.get("is_playing")),
+            "progressMs": progress_ms,
+            "track": {"artist": artist, "title": title, "album": album},
+            "lyrics": {
+                "source": "lrclib",
+                "isSynced": False,
+                "activeIndex": -1,
+                "activeLine": None,
+                "window": [],
+            },
+        }
+        resp_out = JSONResponse(payload)
+        set_cookie_updates(resp_out, cookie_updates)
+        return resp_out
 
-        t_cached = TRANSLATION_CACHE.get(t_key)
-        if t_cached and (now - t_cached["fetched_at"] < TRANSLATION_TTL_SECONDS):
-            translated_lines = t_cached["translated"]
-        else:
-            originals = [ln["original"] for ln in lines]
-            translated_lines = translate_lines(originals, lang)
-            TRANSLATION_CACHE[t_key] = {
-                "translated": translated_lines,
-                "fetched_at": now,
-            }
+    # 2) Translate once per track+lang (cached)
+    t_key = (*track_sig, lang)
+    t_cached = TRANSLATION_CACHE.get(t_key)
+    if t_cached and (now - t_cached["fetched_at"] < TRANSLATION_TTL_SECONDS):
+        translated_list = t_cached["translated"]
+    else:
+        from translator import translate_lines
+        originals = [ln.get("original", "") for ln in base_lines]
+        translated_list = translate_lines(originals, target_lang=lang)
+        TRANSLATION_CACHE[t_key] = {"translated": translated_list, "fetched_at": now}
 
-        # attach translations by index
-        for i, ln in enumerate(lines):
-            ln["translated"] = translated_lines[i] if i < len(translated_lines) else None
+    # Build per-request lines copy with translated attached (avoid mutating cache)
+    lines = []
+    for i, ln in enumerate(base_lines):
+        ln2 = dict(ln)
+        ln2["translated"] = translated_list[i] if i < len(translated_list) else None
+        lines.append(ln2)
 
-        LRCLIB_CACHE[cache_key] = {"lines": lines, "fetched_at": now}
-
+    # 3) Sync
     t_list = [ln["t_ms"] for ln in lines]
-
     idx = current_line_index(t_list, progress_ms)
     w = window(lines, idx, before=2, after=6)
 
@@ -486,7 +681,5 @@ def lyrics_current_synced(request: Request):
     }
 
     resp_out = JSONResponse(payload)
-    if cookie_updates:
-        for k, v in cookie_updates.items():
-            resp_out.set_cookie(key=k, value=v, httponly=True, secure=False)
+    set_cookie_updates(resp_out, cookie_updates)
     return resp_out
