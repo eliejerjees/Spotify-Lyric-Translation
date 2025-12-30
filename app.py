@@ -8,6 +8,7 @@ from lrc_parser import parse_lrc
 from sync_engine import current_line_index, window
 from typing import Optional, Tuple, Literal, cast
 from pathlib import Path
+from urllib.parse import urlencode
 
 # Load environment variables early
 load_dotenv()
@@ -180,20 +181,21 @@ def auth_login():
     challenge = b64url(hashlib.sha256(verifier.encode()).digest())
 
     scopes = "user-read-currently-playing user-read-playback-state"
-    url = (
-        "https://accounts.spotify.com/authorize"
-        f"?response_type=code"
-        f"&client_id={os.environ['SPOTIFY_CLIENT_ID']}"
-        f"&scope={scopes}"
-        f"&redirect_uri={os.environ['SPOTIFY_REDIRECT_URI']}"
-        f"&code_challenge_method=S256"
-        f"&code_challenge={challenge}"
-    )
 
-    redirect = RedirectResponse(url=url)
-    # short-lived PKCE verifier (10 minutes is fine)
-    set_cookie(redirect, "pkce_verifier", verifier, max_age=10 * 60)
-    return redirect
+    params = {
+        "response_type": "code",
+        "client_id": os.environ["SPOTIFY_CLIENT_ID"],
+        "scope": scopes,  # urlencode will turn spaces into %20 (or +)
+        "redirect_uri": os.environ["SPOTIFY_REDIRECT_URI"],
+        "code_challenge_method": "S256",
+        "code_challenge": challenge,
+    }
+
+    url = "https://accounts.spotify.com/authorize?" + urlencode(params)
+
+    resp = RedirectResponse(url=url)
+    set_cookie(resp, "pkce_verifier", verifier, max_age=10 * 60)
+    return resp
 
 @app.get("/auth/callback")
 def auth_callback(request: Request):
