@@ -105,6 +105,7 @@ if _SAMESITE_ENV not in ("lax", "strict", "none"):
     _SAMESITE_ENV = "lax"
 
 COOKIE_SAMESITE: Literal["lax", "strict", "none"] = cast(Literal["lax", "strict", "none"], _SAMESITE_ENV)
+COOKIE_DOMAIN = ".eliejerjees.com"
 COOKIE_PATH = "/"
 
 def set_cookie(resp: Response, key: str, value: str, max_age: Optional[int] = None) -> None:
@@ -114,12 +115,13 @@ def set_cookie(resp: Response, key: str, value: str, max_age: Optional[int] = No
         httponly=True,
         secure=COOKIE_SECURE,
         samesite=COOKIE_SAMESITE,
+        domain=COOKIE_DOMAIN,
         path=COOKIE_PATH,
         max_age=max_age,
     )
 
 def delete_cookie(resp: Response, key: str) -> None:
-    resp.delete_cookie(key=key, path=COOKIE_PATH)
+    resp.delete_cookie(key=key, domain=COOKIE_DOMAIN, path=COOKIE_PATH)
 
 def set_cookie_updates(resp_out: Response, cookie_updates: Optional[dict]) -> None:
     if not cookie_updates:
