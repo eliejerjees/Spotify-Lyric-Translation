@@ -159,13 +159,13 @@ def root(request: Request):
 
     # expired/invalid -> clear cookies so the state is clean
     if must_clear:
-        resp = FileResponse(Path("static") / "landing.html")
+        resp = FileResponse(Path("static") / "index.html")
         delete_cookie(resp, "access_token")
         delete_cookie(resp, "refresh_token")
         delete_cookie(resp, "expires_at")
         return resp
 
-    return FileResponse(Path("static") / "landing.html")
+    return FileResponse(Path("static") / "index.html")
 
 @app.get("/health")
 def health():
