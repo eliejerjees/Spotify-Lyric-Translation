@@ -5,7 +5,7 @@ import os, secrets, hashlib, base64, requests, time
 from dotenv import load_dotenv
 from lrc_parser import parse_lrc
 from sync_engine import current_line_index, window
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Literal, cast
 from pathlib import Path
 
 # Load environment variables early
@@ -13,6 +13,7 @@ load_dotenv()
 
 app = FastAPI()
 
+# Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # =========================
@@ -30,27 +31,33 @@ TRANSLATION_TTL_SECONDS = 60 * 60 * 24  # 24 hours
 def b64url(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
-def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict]]:
+def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict], bool]:
     """
-    Returns (access_token, cookie_updates).
-    cookie_updates is a dict with keys/values to set as cookies when a refresh happens.
-    If no refresh needed, cookie_updates is None.
+    Returns (access_token, cookie_updates, must_clear_auth).
+    - cookie_updates: dict of cookies to set if refreshed
+    - must_clear_auth: True if tokens are invalid/expired and should be cleared
     """
     access_token = request.cookies.get("access_token")
     refresh_token = request.cookies.get("refresh_token")
     expires_at = request.cookies.get("expires_at")
 
-    if not access_token or not refresh_token or not expires_at:
-        return None, None
+    # No access token -> not authenticated
+    if not access_token or not expires_at:
+        return None, None, False
 
-    # still valid (30s buffer)
+    # Still valid (30s buffer)
     try:
         if time.time() < int(expires_at) - 30:
-            return access_token, None
+            return access_token, None, False
     except ValueError:
-        # bad cookie value; force refresh path
+        # bad expires_at -> treat as expired and attempt refresh
         pass
 
+    # Expired. If no refresh token, force re-login.
+    if not refresh_token:
+        return None, None, True
+
+    # Try refresh
     resp = requests.post(
         "https://accounts.spotify.com/api/token",
         data={
@@ -62,21 +69,55 @@ def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict]
     )
 
     if not resp.ok:
-        return None, None
+        return None, None, True
 
     data = resp.json()
-    new_access = data["access_token"]
+    new_access = data.get("access_token")
+    if not new_access:
+        return None, None, True
+
     expires_in = int(data.get("expires_in", 3600))
     new_expires_at = str(int(time.time()) + expires_in)
 
-    return new_access, {"access_token": new_access, "expires_at": new_expires_at}
+    return new_access, {"access_token": new_access, "expires_at": new_expires_at, "expires_in": expires_in}, False
+
+def is_prod() -> bool:
+    return os.environ.get("APP_ENV", "").lower() in ("prod", "production")
+
+COOKIE_SECURE = (os.environ.get("COOKIE_SECURE", "0") == "1") or is_prod()
+
+_SAMESITE_ENV = os.environ.get("COOKIE_SAMESITE", "lax").lower()
+if _SAMESITE_ENV not in ("lax", "strict", "none"):
+    _SAMESITE_ENV = "lax"
+
+COOKIE_SAMESITE: Literal["lax", "strict", "none"] = cast(Literal["lax", "strict", "none"], _SAMESITE_ENV)
+COOKIE_PATH = "/"
+
+def set_cookie(resp: Response, key: str, value: str, max_age: Optional[int] = None) -> None:
+    resp.set_cookie(
+        key=key,
+        value=value,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        path=COOKIE_PATH,
+        max_age=max_age,
+    )
+
+def delete_cookie(resp: Response, key: str) -> None:
+    resp.delete_cookie(key=key, path=COOKIE_PATH)
 
 def set_cookie_updates(resp_out: Response, cookie_updates: Optional[dict]) -> None:
     if not cookie_updates:
         return
+    expires_in = None
+    if "expires_in" in cookie_updates:
+        expires_in = int(cookie_updates["expires_in"])
     for k, v in cookie_updates.items():
-        resp_out.set_cookie(key=k, value=v, httponly=True, secure=False)
-
+        if k == "expires_in":
+            continue
+        set_cookie(resp_out, k, v, max_age=expires_in)
+        
 # =========================
 # Karaoke Page
 # =========================
@@ -94,13 +135,21 @@ def root(request: Request):
     - If the user has a valid access token (or a refreshed one), redirect to `/karaoke`.
     - Otherwise serve the landing page with a "Connect Spotify" button.
     """
-    access_token, cookie_updates = ensure_access_token(request)
+    access_token, cookie_updates, must_clear = ensure_access_token(request)
     if access_token:
         resp = RedirectResponse(url="/karaoke")
         set_cookie_updates(resp, cookie_updates)
         return resp
-    else:
-        return FileResponse(Path("static") / "landing.html")
+
+    # expired/invalid -> clear cookies so the state is clean
+    if must_clear:
+        resp = FileResponse(Path("static") / "landing.html")
+        delete_cookie(resp, "access_token")
+        delete_cookie(resp, "refresh_token")
+        delete_cookie(resp, "expires_at")
+        return resp
+
+    return FileResponse(Path("static") / "landing.html")
 
 @app.get("/health")
 def health():
@@ -110,7 +159,7 @@ def health():
 # AUTH (SPOTIFY OAUTH + PKCE)
 # =========================
 @app.get("/auth/login")
-def auth_login(_: Response):
+def auth_login():
     verifier = b64url(secrets.token_bytes(32))
     challenge = b64url(hashlib.sha256(verifier.encode()).digest())
 
@@ -126,7 +175,8 @@ def auth_login(_: Response):
     )
 
     redirect = RedirectResponse(url=url)
-    redirect.set_cookie(key="pkce_verifier", value=verifier, httponly=True, secure=False)
+    # short-lived PKCE verifier (10 minutes is fine)
+    set_cookie(redirect, "pkce_verifier", verifier, max_age=10 * 60)
     return redirect
 
 @app.get("/auth/callback")
@@ -136,11 +186,17 @@ def auth_callback(request: Request):
     verifier = request.cookies.get("pkce_verifier")
 
     if error:
-        return JSONResponse({"error": error}, status_code=400)
+        resp = JSONResponse({"error": error}, status_code=400)
+        delete_cookie(resp, "pkce_verifier")
+        return resp
     if not code:
-        return JSONResponse({"error": "Missing code parameter"}, status_code=400)
+        resp = JSONResponse({"error": "Missing code parameter"}, status_code=400)
+        delete_cookie(resp, "pkce_verifier")
+        return resp
     if not verifier:
-        return JSONResponse({"error": "Missing PKCE verifier"}, status_code=400)
+        resp = JSONResponse({"error": "Missing PKCE verifier"}, status_code=400)
+        delete_cookie(resp, "pkce_verifier")
+        return resp
 
     token_resp = requests.post(
         "https://accounts.spotify.com/api/token",
@@ -155,10 +211,12 @@ def auth_callback(request: Request):
     )
 
     if not token_resp.ok:
-        return JSONResponse(
+        resp = JSONResponse(
             {"error": "Token exchange failed", "details": token_resp.text},
             status_code=500,
         )
+        delete_cookie(resp, "pkce_verifier")
+        return resp
 
     tokens = token_resp.json()
     access_token = tokens["access_token"]
@@ -166,15 +224,17 @@ def auth_callback(request: Request):
     expires_in = int(tokens.get("expires_in", 3600))
 
     resp = RedirectResponse(url="/")
-    resp.set_cookie(key="access_token", value=access_token, httponly=True, secure=False)
+
+    # session-like; match max_age to token expiry for access token
+    set_cookie(resp, "access_token", access_token, max_age=expires_in)
+    set_cookie(resp, "expires_at", str(int(time.time()) + expires_in), max_age=expires_in)
+
+    # refresh token (Spotify often doesn't rotate; keep long-ish)
     if refresh_token:
-        resp.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=False)
-    resp.set_cookie(
-        key="expires_at",
-        value=str(int(time.time()) + expires_in),
-        httponly=True,
-        secure=False,
-    )
+        set_cookie(resp, "refresh_token", refresh_token, max_age=30 * 24 * 60 * 60)  # 30 days
+
+    # PKCE verifier should be one-time
+    delete_cookie(resp, "pkce_verifier")
     return resp
 
 # =========================
@@ -182,9 +242,14 @@ def auth_callback(request: Request):
 # =========================
 @app.get("/lyrics/current/synced")
 def lyrics_current_synced(request: Request):
-    access_token, cookie_updates = ensure_access_token(request)
+    access_token, cookie_updates, must_clear = ensure_access_token(request)
     if not access_token:
-        return JSONResponse({"error": "Not authenticated"}, status_code=401)
+        resp = JSONResponse({"error": "Not authenticated"}, status_code=401)
+        if must_clear:
+            delete_cookie(resp, "access_token")
+            delete_cookie(resp, "refresh_token")
+            delete_cookie(resp, "expires_at")
+        return resp
 
     lang = request.query_params.get("lang", "es")
 
@@ -194,6 +259,25 @@ def lyrics_current_synced(request: Request):
         timeout=15,
     )
 
+  # Handle various Spotify API responses
+    # Unauthorized
+    if r.status_code == 401:
+        # token invalid; clear cookies so client reauths
+        resp_out = JSONResponse({"error": "Spotify unauthorized. Reconnect."}, status_code=401)
+        delete_cookie(resp_out, "access_token")
+        delete_cookie(resp_out, "refresh_token")
+        delete_cookie(resp_out, "expires_at")
+        return resp_out
+
+    # Rate limited
+    if r.status_code == 429:
+        retry_after = r.headers.get("Retry-After")
+        payload = {"error": "Spotify rate limited", "retryAfter": retry_after}
+        resp_out = JSONResponse(payload, status_code=429)
+        set_cookie_updates(resp_out, cookie_updates)
+        return resp_out
+
+    # No content (nothing playing)
     if r.status_code == 204:
         payload = {
             "playbackState": "inactive",

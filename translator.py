@@ -1,5 +1,6 @@
 import os
 from google.cloud import translate_v2 as translate
+from html import unescape
 
 _client = None
 
@@ -21,4 +22,4 @@ def translate_lines(lines: list[str], target_lang: str) -> list[str]:
 
     client = get_client()
     result = client.translate(lines, target_language=target_lang, format_="text")
-    return [r["translatedText"] for r in result]
+    return [unescape(r["translatedText"]) for r in result]

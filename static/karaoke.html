@@ -389,8 +389,8 @@
     class LingualSync {
       constructor() {
         this.currentLanguage = document.getElementById('languageSelect').value || 'en';
-        this.pollIntervalActive = 500; // ms while playing
-        this.pollIntervalPaused = 2000; // ms while paused (slower)
+        this.pollIntervalActive = 1000; // ms while playing
+        this.pollIntervalPaused = 5000; // ms while paused (slower)
         this.pollTimer = null;
         this.pollInterval = this.pollIntervalActive;
         this.lyricsContainer = document.getElementById('lyricsScroll');
