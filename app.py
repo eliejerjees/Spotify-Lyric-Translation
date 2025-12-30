@@ -328,7 +328,13 @@ def lyrics_current(request: Request):
     lrc_text = payload_lr.get("syncedLyrics") or payload_lr.get("plainLyrics")
 
     if not lrc_text:
-        payload = {"track": {"artist": artist, "title": title, "album": album}, "isSynced": False, "lines": []}
+        payload = {
+            "track": {
+                "artist": artist,
+                "title": title,
+                "album": album,
+              }, 
+              "isSynced": False, "lines": []}
         resp_out = JSONResponse(payload)
         set_cookie_updates(resp_out, cookie_updates)
         return resp_out
@@ -337,7 +343,11 @@ def lyrics_current(request: Request):
     lines = [ln.__dict__ for ln in parsed]
 
     payload = {
-        "track": {"artist": artist, "title": title, "album": album},
+        "track": {
+            "artist": artist,
+            "title": title,
+            "album": album,
+        },
         "source": "lrclib",
         "isSynced": len(lines) > 0,
         "lines": lines,
@@ -395,15 +405,22 @@ def lyrics_current_synced(request: Request):
     artist = artists[0].get("name") if artists else None
     album = (item.get("album") or {}).get("name")
     duration_ms = item.get("duration_ms")
-
-    if not title or not artist or not album or not duration_ms:
-        return JSONResponse({"error": "Missing artist/title/album/duration"}, status_code=400)
-
-    # Identify track
     track_id = item.get("id")
-    if not track_id:
-        return JSONResponse({"error": "Missing track id"}, status_code=400)
+    images = (item.get("album") or {}).get("images") or []
+    album_art_url = images[0].get("url") if images else None
+
+
+    if not title or not artist or not album or not duration_ms or not track_id:
+        return JSONResponse({"error": "Missing artist/title/album/duration/track id"}, status_code=400)
     
+    track_payload = {
+    "artist": artist,
+    "title": title,
+    "album": album,
+    "albumArtUrl": album_art_url,
+    "trackId": track_id,
+    }
+
     #  Use duration in seconds for better cache hits
     duration_s = round(duration_ms / 1000)
     track_sig = (track_id, duration_s)  # use this everywhere for caches
@@ -437,7 +454,7 @@ def lyrics_current_synced(request: Request):
             payload = {
                 "isPlaying": bool(data.get("is_playing")),
                 "progressMs": progress_ms,
-                "track": {"artist": artist, "title": title, "album": album},
+                "track": track_payload,
                 "lyrics": {
                     "source": "lrclib",
                     "isSynced": False,
@@ -459,14 +476,14 @@ def lyrics_current_synced(request: Request):
         payload = {
             "isPlaying": bool(data.get("is_playing")),
             "progressMs": progress_ms,
-            "track": {"artist": artist, "title": title, "album": album},
+            "track": track_payload,
             "lyrics": {
                 "source": "lrclib",
                 "isSynced": False,
                 "activeIndex": -1,
                 "activeLine": None,
                 "window": [],
-            },
+              },
         }
         resp_out = JSONResponse(payload)
         set_cookie_updates(resp_out, cookie_updates)
@@ -512,7 +529,7 @@ def lyrics_current_synced(request: Request):
     payload = {
         "isPlaying": bool(data.get("is_playing")),
         "progressMs": progress_ms,
-        "track": {"artist": artist, "title": title, "album": album},
+        "track": track_payload,
         "lyrics": {
             "source": "lrclib",
             "isSynced": True,
