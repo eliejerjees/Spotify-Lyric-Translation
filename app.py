@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Response, Request
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import os, secrets, hashlib, base64, requests, time
 from dotenv import load_dotenv
 from lrc_parser import parse_lrc
@@ -15,6 +16,19 @@ app = FastAPI()
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# =========================
+# CORS SETUP
+# =========================
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:8000")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[FRONTEND_ORIGIN],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # =========================
 # CACHES
@@ -119,11 +133,11 @@ def set_cookie_updates(resp_out: Response, cookie_updates: Optional[dict]) -> No
         set_cookie(resp_out, k, v, max_age=expires_in)
         
 # =========================
-# Karaoke Page
+# Main Page
 # =========================
-@app.get("/karaoke", response_class=HTMLResponse)
-def karaoke_page():
-    return FileResponse(Path("static") / "karaoke.html")
+@app.get("/lingual-sync", response_class=HTMLResponse)
+def lingual_sync():
+    return FileResponse(Path("static") / "lingual-sync.html")
 
 # =========================
 # BASIC ENDPOINTS
@@ -132,12 +146,12 @@ def karaoke_page():
 def root(request: Request):
     """Serve landing page or redirect based on authentication.
 
-    - If the user has a valid access token (or a refreshed one), redirect to `/karaoke`.
+    - If the user has a valid access token (or a refreshed one), redirect to `/lingual-sync`.
     - Otherwise serve the landing page with a "Connect Spotify" button.
     """
     access_token, cookie_updates, must_clear = ensure_access_token(request)
     if access_token:
-        resp = RedirectResponse(url="/karaoke")
+        resp = RedirectResponse(url="/lingual-sync")
         set_cookie_updates(resp, cookie_updates)
         return resp
 
@@ -223,7 +237,9 @@ def auth_callback(request: Request):
     refresh_token = tokens.get("refresh_token")
     expires_in = int(tokens.get("expires_in", 3600))
 
-    resp = RedirectResponse(url="/")
+    # Redirect to frontend with cookies set
+    FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:8000")
+    resp = RedirectResponse(url=f"{FRONTEND_ORIGIN}/lingual-sync")
 
     # session-like; match max_age to token expiry for access token
     set_cookie(resp, "access_token", access_token, max_age=expires_in)
