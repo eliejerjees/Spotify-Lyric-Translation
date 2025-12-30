@@ -417,6 +417,8 @@ def lyrics_current_synced(request: Request):
     "artist": artist,
     "title": title,
     "album": album,
+    "artist": artist,
+    "durationMs": duration_ms,
     "albumArtUrl": album_art_url,
     "trackId": track_id,
     }
