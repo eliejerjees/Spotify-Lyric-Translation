@@ -456,7 +456,6 @@ def lyrics_current_synced(request: Request):
         return JSONResponse({"error": "Missing artist/title/album/duration/track id"}, status_code=400)
     
     track_payload = {
-    "artist": artist,
     "title": title,
     "album": album,
     "artist": artist,
@@ -492,17 +491,22 @@ def lyrics_current_synced(request: Request):
 
         payload_lr = lr.json()
         lrc_text = payload_lr.get("syncedLyrics")
+        is_playing = bool(data.get("is_playing"))
+        playback_state = "playing" if is_playing else "paused"
+
 
         if not lrc_text:
             LRCLIB_CACHE[track_sig] = {"lines": [], "fetched_at": now}
             payload = {
-                "isPlaying": bool(data.get("is_playing")),
+                "playbackState": playback_state,
+                "isPlaying": is_playing,
                 "progressMs": progress_ms,
                 "track": track_payload,
                 "lyrics": {
                     "source": "lrclib",
                     "isSynced": False,
                     "activeIndex": -1,
+                    "windowStartIndex": 0,
                     "activeLine": None,
                     "window": [],
                 },
@@ -515,16 +519,21 @@ def lyrics_current_synced(request: Request):
         base_lines = [ln.__dict__ for ln in parsed]
         LRCLIB_CACHE[track_sig] = {"lines": base_lines, "fetched_at": now}
 
+    is_playing = bool(data.get("is_playing"))
+    playback_state = "playing" if is_playing else "paused"
+
     # If no synced lyrics, return normalized shape
     if not base_lines:
         payload = {
-            "isPlaying": bool(data.get("is_playing")),
+            "playbackState": playback_state,
+            "isPlaying": is_playing,
             "progressMs": progress_ms,
             "track": track_payload,
             "lyrics": {
                 "source": "lrclib",
                 "isSynced": False,
                 "activeIndex": -1,
+                "windowStartIndex": 0,
                 "activeLine": None,
                 "window": [],
               },

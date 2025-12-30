@@ -389,7 +389,10 @@
     class LingualSync {
       constructor() {
         this.currentLanguage = document.getElementById('languageSelect').value || 'en';
-        this.pollInterval = 500;
+        this.pollIntervalActive = 500; // ms while playing
+        this.pollIntervalPaused = 2000; // ms while paused (slower)
+        this.pollTimer = null;
+        this.pollInterval = this.pollIntervalActive;
         this.lyricsContainer = document.getElementById('lyricsScroll');
         this.languageSelect = document.getElementById('languageSelect');
 
@@ -477,30 +480,36 @@
       }
 
       render(payload) {
-        // Short-circuit: if track + active line + playback state unchanged, skip DOM work
-        const trackKey = payload.track ? (payload.track.trackId || payload.track.id || null) : null;
-        const activeKey = payload.lyrics && payload.lyrics.activeLine ? payload.lyrics.activeLine.t_ms : null;
-        const playbackKey = payload.playbackState ?? (payload.isPlaying === false ? 'paused' : (payload.isPlaying ? 'playing' : null));
-
-        if (trackKey === this.lastTrackKey && activeKey === this.lastActiveKey && playbackKey === this.lastPlaybackKey) {
-          // nothing changed
-          return;
-        }
-
-        // update header and lyrics because something changed
-        this.setHeaderTrack(payload);
-
         if (!payload || payload.error) {
           this.lyricsContainer.innerHTML = `<div class="loading">${this.esc(payload?.details || payload?.error || "Unknown error")}</div>`;
           return;
         }
 
-        // IMPORTANT CHANGE:
-        // If track exists, keep showing lyrics even if paused.
-        if (!payload.track) {
+        const trackKey = payload.track ? (payload.track.trackId || payload.track.trackId || payload.track.id || null) : null;
+        const activeKey = payload.lyrics && payload.lyrics.activeLine ? payload.lyrics.activeLine.t_ms : null;
+        const playbackKey = payload.playbackState ?? (payload.isPlaying === false ? 'paused' : (payload.isPlaying ? 'playing' : 'inactive'));
+
+        // If inactive or no track context -> show start playing
+        const isInactive = playbackKey === 'inactive' || !payload.track;
+        if (isInactive) {
+          this.setHeaderTrack(payload);
           this.lyricsContainer.innerHTML = `<div class="loading">Start playing a song on Spotify…</div>`;
+          // when inactive, keep polling at active interval
+          this.setPollInterval(this.pollIntervalActive);
+          // persist keys
+          this.lastTrackKey = trackKey;
+          this.lastActiveKey = activeKey;
+          this.lastPlaybackKey = playbackKey;
           return;
         }
+
+        // Short-circuit: if track + active line + playback state unchanged, skip DOM work
+        if (trackKey === this.lastTrackKey && activeKey === this.lastActiveKey && playbackKey === this.lastPlaybackKey) {
+          return;
+        }
+
+        // update header and lyrics because something changed
+        this.setHeaderTrack(payload);
 
         const lyrics = payload.lyrics;
         if (!lyrics || !lyrics.isSynced) {
@@ -523,6 +532,10 @@
         }).join("");
 
         this.lyricsContainer.innerHTML = html || `<div class="loading">No lines in window.</div>`;
+
+        // Polling behavior: slow down when paused to reduce flicker / load
+        if (paused) this.setPollInterval(this.pollIntervalPaused);
+        else this.setPollInterval(this.pollIntervalActive);
 
         // Only auto-scroll while PLAYING. When paused, user likely wants to read.
         const newActiveKey = activeLine ? activeLine.t_ms : null;
@@ -552,7 +565,12 @@
 
       startPolling() {
         this.fetchLyrics();
-        setInterval(() => this.fetchLyrics(), this.pollInterval);
+        this.setPollInterval(this.pollInterval);
+      }
+
+      setPollInterval(ms) {
+        if (this.pollTimer) clearInterval(this.pollTimer);
+        this.pollTimer = setInterval(() => this.fetchLyrics(), ms);
       }
     }
 
