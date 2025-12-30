@@ -89,20 +89,18 @@ def karaoke_page():
 # =========================
 @app.get("/")
 def root(request: Request):
-    """Redirect to an appropriate page based on authentication.
+    """Serve landing page or redirect based on authentication.
 
-    - If the user has a valid access token (or a refreshed one), send them to `/karaoke`.
-    - Otherwise send them to `/auth/login`.
-    Preserve any cookie updates produced by `ensure_access_token`.
+    - If the user has a valid access token (or a refreshed one), redirect to `/karaoke`.
+    - Otherwise serve the landing page with a "Connect Spotify" button.
     """
     access_token, cookie_updates = ensure_access_token(request)
     if access_token:
         resp = RedirectResponse(url="/karaoke")
+        set_cookie_updates(resp, cookie_updates)
+        return resp
     else:
-        resp = RedirectResponse(url="/auth/login")
-
-    set_cookie_updates(resp, cookie_updates)
-    return resp
+        return FileResponse(Path("static") / "landing.html")
 
 @app.get("/health")
 def health():
