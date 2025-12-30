@@ -1,5 +1,6 @@
 {
   "rewrites": [
+    { "source": "/", "destination": "/index.html" },
     { "source": "/lingual-sync", "destination": "/lingual-sync.html" }
   ]
 }
