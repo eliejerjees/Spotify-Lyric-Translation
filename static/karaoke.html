@@ -399,6 +399,8 @@
         this.syncTextEl = document.getElementById('syncText');
 
         this.lastActiveKey = null;
+        this.lastTrackKey = null;
+        this.lastPlaybackKey = null;
 
         this.setupEventListeners();
         this.startPolling();
@@ -424,7 +426,6 @@
 
       setHeaderTrack(payload) {
         const track = payload?.track;
-
         if (!payload || payload.error) {
           this.songTitleEl.textContent = "Error";
           this.songArtistEl.textContent = payload?.details || payload?.error || "";
@@ -445,7 +446,8 @@
 
         const title = track.title || "";
         const artist = track.artist || "";
-        const paused = payload.isPlaying === false;
+        const playbackState = payload.playbackState ?? (payload.isPlaying === false ? 'paused' : (payload.isPlaying ? 'playing' : 'inactive'));
+        const paused = playbackState === 'paused';
 
         this.songTitleEl.textContent = title + (paused ? " " : "");
         // optional paused badge
@@ -459,7 +461,9 @@
         const url = track.albumArtUrl || track.album_art_url || track.albumArtURL || null;
         this.albumCoverEl.src = url || this.placeholderCover();
 
-        this.syncTextEl.textContent = paused ? "Paused" : "Synced with Spotify";
+        if (playbackState === 'playing') this.syncTextEl.textContent = 'Synced with Spotify';
+        else if (playbackState === 'paused') this.syncTextEl.textContent = 'Paused';
+        else this.syncTextEl.textContent = 'Inactive';
       }
 
       async fetchLyrics() {
@@ -473,6 +477,17 @@
       }
 
       render(payload) {
+        // Short-circuit: if track + active line + playback state unchanged, skip DOM work
+        const trackKey = payload.track ? (payload.track.trackId || payload.track.id || null) : null;
+        const activeKey = payload.lyrics && payload.lyrics.activeLine ? payload.lyrics.activeLine.t_ms : null;
+        const playbackKey = payload.playbackState ?? (payload.isPlaying === false ? 'paused' : (payload.isPlaying ? 'playing' : null));
+
+        if (trackKey === this.lastTrackKey && activeKey === this.lastActiveKey && playbackKey === this.lastPlaybackKey) {
+          // nothing changed
+          return;
+        }
+
+        // update header and lyrics because something changed
         this.setHeaderTrack(payload);
 
         if (!payload || payload.error) {
@@ -495,8 +510,7 @@
 
         const windowLines = lyrics.window || [];
         const activeLine = lyrics.activeLine;
-        const activeKey = activeLine ? activeLine.t_ms : null;
-        const paused = payload.isPlaying === false;
+        const paused = playbackKey === 'paused';
 
         const html = windowLines.map((line) => {
           const isActive = (activeLine && line.t_ms === activeLine.t_ms);
@@ -510,13 +524,17 @@
 
         this.lyricsContainer.innerHTML = html || `<div class="loading">No lines in window.</div>`;
 
-        // Only auto-scroll while PLAYING.
-        // When paused, user likely wants to read without fighting the scroll.
-        if (!paused && activeKey !== null && activeKey !== this.lastActiveKey) {
-          this.lastActiveKey = activeKey;
-          const el = this.lyricsContainer.querySelector(`[data-tms="${activeKey}"]`);
+        // Only auto-scroll while PLAYING. When paused, user likely wants to read.
+        const newActiveKey = activeLine ? activeLine.t_ms : null;
+        if (!paused && newActiveKey !== null && newActiveKey !== this.lastActiveKey) {
+          this.lastActiveKey = newActiveKey;
+          const el = this.lyricsContainer.querySelector(`[data-tms="${newActiveKey}"]`);
           if (el) this.scrollToElement(el);
         }
+
+        // persist last seen keys
+        this.lastTrackKey = trackKey;
+        this.lastPlaybackKey = playbackKey;
       }
 
       scrollToElement(el) {

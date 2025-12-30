@@ -71,7 +71,7 @@ def ensure_access_token(request: Request) -> Tuple[Optional[str], Optional[dict]
 
     return new_access, {"access_token": new_access, "expires_at": new_expires_at}
 
-def set_cookie_updates(resp_out: JSONResponse, cookie_updates: Optional[dict]) -> None:
+def set_cookie_updates(resp_out: Response, cookie_updates: Optional[dict]) -> None:
     if not cookie_updates:
         return
     for k, v in cookie_updates.items():
@@ -88,8 +88,21 @@ def karaoke_page():
 # BASIC ENDPOINTS
 # =========================
 @app.get("/")
-def root():
-    return {"app": "LingualSync", "status": "ok"}
+def root(request: Request):
+    """Redirect to an appropriate page based on authentication.
+
+    - If the user has a valid access token (or a refreshed one), send them to `/karaoke`.
+    - Otherwise send them to `/auth/login`.
+    Preserve any cookie updates produced by `ensure_access_token`.
+    """
+    access_token, cookie_updates = ensure_access_token(request)
+    if access_token:
+        resp = RedirectResponse(url="/karaoke")
+    else:
+        resp = RedirectResponse(url="/auth/login")
+
+    set_cookie_updates(resp, cookie_updates)
+    return resp
 
 @app.get("/health")
 def health():
@@ -182,7 +195,7 @@ def now_playing(request: Request):
     )
 
     if r.status_code == 204:
-        payload = {"isPlaying": False, "track": None, "progressMs": None}
+        payload = {"playbackState": "inactive", "isPlaying": False, "progressMs": None, "track": None}
         resp_out = JSONResponse(payload)
         set_cookie_updates(resp_out, cookie_updates)
         return resp_out
@@ -203,8 +216,12 @@ def now_playing(request: Request):
             "durationMs": item.get("duration_ms"),
         }
 
+    is_playing = bool(data.get("is_playing"))
+    playback_state = "playing" if is_playing else "paused"
+
     payload = {
-        "isPlaying": bool(data.get("is_playing")),
+        "playbackState": playback_state,
+        "isPlaying": is_playing,
         "progressMs": data.get("progress_ms"),
         "track": track,
     }
@@ -288,7 +305,19 @@ def lyrics_current(request: Request):
     )
 
     if r.status_code == 204:
-        payload = {"error": "Nothing playing"}
+        payload = {
+            "playbackState": "inactive",
+            "isPlaying": False,
+            "progressMs": None,
+            "track": None,
+            "lyrics": {
+                "source": "lrclib",
+                "isSynced": False,
+                "activeIndex": -1,
+                "activeLine": None,
+                "window": [],
+            },
+        }
         resp_out = JSONResponse(payload)
         set_cookie_updates(resp_out, cookie_updates)
         return resp_out
@@ -328,13 +357,21 @@ def lyrics_current(request: Request):
     lrc_text = payload_lr.get("syncedLyrics") or payload_lr.get("plainLyrics")
 
     if not lrc_text:
+        is_playing = bool(data.get("is_playing"))
+        playback_state = "playing" if is_playing else "paused"
+
         payload = {
+            "playbackState": playback_state,
+            "isPlaying": is_playing,
+            "progressMs": data.get("progress_ms"),
             "track": {
                 "artist": artist,
                 "title": title,
                 "album": album,
-              }, 
-              "isSynced": False, "lines": []}
+            },
+            "isSynced": False,
+            "lines": [],
+        }
         resp_out = JSONResponse(payload)
         set_cookie_updates(resp_out, cookie_updates)
         return resp_out
@@ -342,7 +379,13 @@ def lyrics_current(request: Request):
     parsed = parse_lrc(lrc_text)
     lines = [ln.__dict__ for ln in parsed]
 
+    is_playing = bool(data.get("is_playing"))
+    playback_state = "playing" if is_playing else "paused"
+
     payload = {
+        "playbackState": playback_state,
+        "isPlaying": is_playing,
+        "progressMs": data.get("progress_ms"),
         "track": {
             "artist": artist,
             "title": title,
@@ -376,6 +419,7 @@ def lyrics_current_synced(request: Request):
 
     if r.status_code == 204:
         payload = {
+            "playbackState": "inactive",
             "isPlaying": False,
             "progressMs": None,
             "track": None,
@@ -528,8 +572,12 @@ def lyrics_current_synced(request: Request):
     # global index of w[0] inside `lines`
     window_start_index = max(0, idx - before) if idx >= 0 else 0
 
+    is_playing = bool(data.get("is_playing"))
+    playback_state = "playing" if is_playing else "paused"
+
     payload = {
-        "isPlaying": bool(data.get("is_playing")),
+        "playbackState": playback_state,
+        "isPlaying": is_playing,
         "progressMs": progress_ms,
         "track": track_payload,
         "lyrics": {
