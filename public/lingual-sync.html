@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LingualSync - Live Synced Lyrics</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body {
+      font-family: 'Circular', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+      background:#121212;
+      color:#b3b3b3;
+      min-height:100vh;
+      overflow:hidden;
+      position:relative;
+    }
+
+    body::before{
+      content:'';
+      position:fixed; top:0; left:0; right:0;
+      height:300px;
+      background:radial-gradient(ellipse at top, rgba(29,185,84,0.08) 0%, transparent 60%);
+      pointer-events:none; z-index:0;
+    }
+
+    .container{
+      max-width:1400px;
+      margin:0 auto;
+      height:100vh;
+      display:flex;
+      flex-direction:column;
+      padding:0 2rem;
+      position:relative;
+      z-index:1;
+    }
+
+    /* Header */
+    .header{
+      padding:1.25rem 0;
+      display:grid;
+      grid-template-columns: 1fr auto 1fr; /* left spacer, centered song, right controls */
+      align-items:center;
+      gap:1rem;
+      border-bottom:1px solid #282828;
+    }
+
+    .logo{
+      font-size:1.5rem;
+      font-weight:700;
+      color:#1db954;
+      letter-spacing:-0.5px;
+      justify-self:start;
+    }
+
+    .song-info{
+      justify-self:center;           /* center in header */
+      display:flex;
+      align-items:center;
+      gap:0.9rem;
+      min-width:0;
+      text-align:center;
+    }
+
+    .album-cover{
+      width:52px;
+      height:52px;
+      border-radius:6px;
+      object-fit:cover;
+      flex-shrink:0;
+      background:#282828;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    }
+
+    .song-details{
+      display:flex;
+      flex-direction:column;
+      gap:0.2rem;
+      min-width:0;
+      align-items:flex-start;
+    }
+
+    .song-title{
+      font-size:0.95rem;
+      font-weight:650;
+      color:#fff;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 520px;
+    }
+
+    .song-artist{
+      font-size:0.85rem;
+      color:#b3b3b3;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      max-width: 520px;
+    }
+
+    .controls{
+      justify-self:end;
+      display:flex;
+      align-items:center;
+      gap:0.75rem;
+    }
+
+    .language-selector{
+      position:relative;
+    }
+
+    .language-selector select{
+      appearance:none;
+      background:#282828;
+      border:none;
+      color:#fff;
+      padding:0.65rem 2.5rem 0.65rem 1rem;
+      border-radius:6px;
+      font-size:0.9rem;
+      cursor:pointer;
+      transition:background 0.2s;
+      min-width:190px;
+    }
+
+    .language-selector select:hover,
+    .language-selector select:focus{
+      outline:none;
+      background:#3e3e3e;
+    }
+
+    .language-selector::after{
+      content:'▾';
+      position:absolute;
+      right:1rem;
+      top:50%;
+      transform:translateY(-50%);
+      pointer-events:none;
+      color:#b3b3b3;
+      font-size:0.8rem;
+    }
+
+    /* Lyrics Container */
+    .lyrics-container{
+      flex:1;
+      overflow:hidden;
+      padding:1.6rem 0;
+      display:flex;
+      flex-direction:column;
+      min-height:0; /* critical for proper scroll on mobile */
+    }
+
+    .panel-labels{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:2.5rem;
+      margin-bottom:0.9rem;
+      padding-bottom:0.75rem;
+      border-bottom:1px solid rgba(29,185,84,0.15);
+    }
+
+    .panel-label{
+      font-size:0.75rem;
+      font-weight:700;
+      text-transform:uppercase;
+      letter-spacing:0.5px;
+      color:#1db954;
+    }
+
+    .lyrics-scroll{
+      flex:1;
+      min-height:0;
+      overflow-y:auto;
+      scroll-behavior:smooth;
+      padding-right:0.5rem;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
+      scroll-padding-top: 18px;
+      scroll-padding-bottom: 18px;
+    }
+
+    /* Custom scrollbar */
+    .lyrics-scroll::-webkit-scrollbar{ width:12px; }
+    .lyrics-scroll::-webkit-scrollbar-track{ background:transparent; }
+    .lyrics-scroll::-webkit-scrollbar-thumb{ background:#282828; border-radius:6px; }
+    .lyrics-scroll::-webkit-scrollbar-thumb:hover{ background:#3e3e3e; }
+
+    .lyric-pair{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:2.5rem;
+      padding:0.8rem 0;
+      margin:0.3rem 0;
+      transition:all 0.25s ease;
+      border-left:3px solid transparent;
+      padding-left:0.5rem;
+    }
+
+    .lyric-line{
+      font-size:1.08rem;
+      line-height:1.5;
+      opacity:0.35;
+      font-weight:400;
+      word-break: break-word;
+    }
+
+    .lyric-pair.active{ border-left-color:#1db954; }
+    .lyric-pair.active .lyric-line{
+      opacity:1;
+      color:#fff;
+      font-size:1.12rem;
+      font-weight:650;
+    }
+
+    .lyric-pair.near-active .lyric-line{ opacity:0.6; }
+
+    /* Added: paused state styling */
+    .lyric-pair.paused { border-left-color: rgba(29,185,84,0.55); }
+    .paused-badge{
+      font-size:0.72rem;
+      font-weight:700;
+      color:#b3b3b3;
+      border:1px solid #3a3a3a;
+      background:#1a1a1a;
+      padding:0.2rem 0.45rem;
+      border-radius:999px;
+      margin-left:0.5rem;
+      vertical-align:middle;
+    }
+
+    /* Sync indicator */
+    .sync-indicator{
+      position:fixed;
+      bottom:1.5rem;
+      right:1.5rem;
+      background:#282828;
+      padding:0.5rem 0.9rem;
+      border-radius:6px;
+      font-size:0.75rem;
+      display:flex;
+      align-items:center;
+      gap:0.5rem;
+      color:#b3b3b3;
+    }
+
+    .sync-dot{
+      width:6px;
+      height:6px;
+      background:#1db954;
+      border-radius:50%;
+      animation:pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse{
+      0%,100%{ opacity:1; transform:scale(1); }
+      50%{ opacity:0.5; transform:scale(0.8); }
+    }
+
+    .loading{
+      text-align:center;
+      padding:2rem;
+      color:#535353;
+      font-size:1rem;
+    }
+
+    /* Responsive */
+    @media (max-width: 900px){
+      .header{
+        grid-template-columns: 1fr; /* stack */
+        justify-items:center;
+        gap:0.75rem;
+      }
+      .logo{ justify-self:center; }
+      .controls{ justify-self:center; }
+      .song-info{ justify-self:center; }
+      .song-title,.song-artist{ max-width: 84vw; }
+    }
+
+    @media (max-width: 768px){
+      .container{ padding:0 1rem; }
+      .panel-labels,.lyric-pair{
+        grid-template-columns:1fr;
+        gap:1.2rem;
+      }
+      .lyrics-scroll{
+        padding-right:0.25rem;
+        scroll-padding-top: 26px;
+        scroll-padding-bottom: 26px;
+      }
+      .sync-indicator{ bottom:1rem; right:1rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">LingualSync</div>
+
+      <!-- CENTERED TRACK -->
+      <div class="song-info">
+        <img
+          src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect width='56' height='56' fill='%23282828'/%3E%3C/svg%3E"
+          alt="Album cover"
+          class="album-cover"
+          id="albumCover"
+        />
+        <div class="song-details">
+          <div class="song-title" id="songTitle">Not playing</div>
+          <div class="song-artist" id="songArtist"></div>
+        </div>
+      </div>
+
+      <!-- RIGHT CONTROLS -->
+      <div class="controls">
+        <div class="language-selector">
+          <select id="languageSelect">
+            <option value="af">Afrikaans</option>
+            <option value="am">Amharic (አማርኛ)</option>
+            <option value="ar">Arabic (العربية)</option>
+            <option value="bn">Bengali (বাংলা)</option>
+            <option value="my">Burmese (မြန်မာ)</option>
+            <option value="ny">Chewa (Chichewa)</option>
+            <option value="zh-CN">Chinese Simplified (简体中文)</option>
+            <option value="zh-TW">Chinese Traditional (繁體中文)</option>
+            <option value="cs">Czech (Čeština)</option>
+            <option value="da">Danish (Dansk)</option>
+            <option value="dz">Dzongkha (རྫོང་ཁ)</option>
+            <option value="nl">Dutch (Nederlands)</option>
+            <option value="en">English (English)</option>
+            <option value="tl">Filipino (Tagalog)</option>
+            <option value="fi">Finnish (Suomi)</option>
+            <option value="fr">French (Français)</option>
+            <option value="ka">Georgian (ქართული)</option>
+            <option value="de">German (Deutsch)</option>
+            <option value="el">Greek (Ελληνικά)</option>
+            <option value="gu">Gujarati (ગુજરાતી)</option>
+            <option value="ha">Hausa (Hausa)</option>
+            <option value="he">Hebrew (עברית)</option>
+            <option value="hi">Hindi (हिन्दी)</option>
+            <option value="hu">Hungarian (Magyar)</option>
+            <option value="ig">Igbo (Asụsụ Igbo)</option>
+            <option value="id">Indonesian (Bahasa Indonesia)</option>
+            <option value="it">Italian (Italiano)</option>
+            <option value="ja">Japanese (日本語)</option>
+            <option value="jv">Javanese (Basa Jawa)</option>
+            <option value="kn">Kannada (ಕನ್ನಡ)</option>
+            <option value="km">Khmer (ខ្មែរ)</option>
+            <option value="ko">Korean (한국어)</option>
+            <option value="lo">Lao (ລາວ)</option>
+            <option value="ms">Malay (Bahasa Melayu)</option>
+            <option value="ml">Malayalam (മലയാളം)</option>
+            <option value="mr">Marathi (मराठी)</option>
+            <option value="ne">Nepali (नेपाली)</option>
+            <option value="no">Norwegian (Norsk)</option>
+            <option value="om">Oromo (Afaan Oromoo)</option>
+            <option value="fa">Persian (فارسی)</option>
+            <option value="pl">Polish (Polski)</option>
+            <option value="pt">Portuguese (Português)</option>
+            <option value="pa">Punjabi (ਪੰਜਾਬੀ)</option>
+            <option value="ro">Romanian (Română)</option>
+            <option value="ru">Russian (Русский)</option>
+            <option value="ts">Shona–Xitsonga (Xitsonga)</option>
+            <option value="sn">Shona (chiShona)</option>
+            <option value="st">Sotho (Sesotho)</option>
+            <option value="es">Spanish (Español)</option>
+            <option value="sw">Swahili (Kiswahili)</option>
+            <option value="sv">Swedish (Svenska)</option>
+            <option value="ta">Tamil (தமிழ்)</option>
+            <option value="te">Telugu (తెలుగు)</option>
+            <option value="th">Thai (ไทย)</option>
+            <option value="bo">Tibetan</option>
+            <option value="to">Tonga (chiTonga)</option>
+            <option value="tn">Tswana (Setswana)</option>
+            <option value="tr">Turkish (Türkçe)</option>
+            <option value="uk">Ukrainian (Українська)</option>
+            <option value="ur">Urdu (اردو)</option>
+            <option value="ve">Venda (Tshivenda)</option>
+            <option value="vi">Vietnamese (Tiếng Việt)</option>
+            <option value="xh">Xhosa (isiXhosa)</option>
+            <option value="yo">Yoruba (Yorùbá)</option>
+            <option value="zu">Zulu (isiZulu)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="lyrics-container">
+      <div class="panel-labels">
+        <div class="panel-label">Original</div>
+        <div class="panel-label">Translation</div>
+      </div>
+
+      <div class="lyrics-scroll" id="lyricsScroll">
+        <div class="loading">Waiting for lyrics...</div>
+      </div>
+    </div>
+
+    <div class="sync-indicator">
+      <div class="sync-dot"></div>
+      <span id="syncText">Synced with Spotify</span>
+    </div>
+  </div>
+
+  <script>
+    window.LINGUALSYNC_API_BASE = "https://api.lingualsync.eliejerjees.com";
+  </script>
+
+  <script>
+    class LingualSync {
+      constructor() {
+        this.currentLanguage = document.getElementById("languageSelect").value || "en";
+
+        this.pollIntervalActive = 1000;
+        this.pollIntervalPaused = 5000;
+        this.pollTimer = null;
+
+        this.lyricsContainer = document.getElementById("lyricsScroll");
+        this.languageSelect = document.getElementById("languageSelect");
+        this.songTitleEl = document.getElementById("songTitle");
+        this.songArtistEl = document.getElementById("songArtist");
+        this.albumCoverEl = document.getElementById("albumCover");
+        this.syncTextEl = document.getElementById("syncText");
+
+        this.lastActiveKey = null;
+        this.lastTrackKey = null;
+        this.lastPlaybackKey = null;
+
+        this.apiBase =
+          (window.LINGUALSYNC_API_BASE || "").trim() ||
+          "https://api.lingualsync.eliejerjees.com";
+
+        this.setupEventListeners();
+        this.startPolling();
+      }
+
+      setupEventListeners() {
+        this.languageSelect.addEventListener("change", (e) => {
+          this.currentLanguage = e.target.value;
+          this.fetchLyrics(true);
+        });
+      }
+
+      esc(s) {
+        return (s ?? "").toString()
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;");
+      }
+
+      placeholderCover() {
+        return "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect width='56' height='56' fill='%23282828'/%3E%3C/svg%3E";
+      }
+
+      setHeaderTrack(payload) {
+        const track = payload && payload.track ? payload.track : null;
+
+        if (!payload || payload.error) {
+          this.songTitleEl.textContent = "Error";
+          this.songArtistEl.textContent = (payload && (payload.details || payload.error)) || "";
+          this.albumCoverEl.src = this.placeholderCover();
+          this.syncTextEl.textContent = "Error";
+          return;
+        }
+
+        if (!track) {
+          this.songTitleEl.textContent = "Not playing";
+          this.songArtistEl.textContent = "";
+          this.albumCoverEl.src = this.placeholderCover();
+          this.syncTextEl.textContent = "Inactive";
+          return;
+        }
+
+        const title = track.title || "";
+        const artist = track.artist || "";
+        const playbackState =
+          payload.playbackState ??
+          (payload.isPlaying === false ? "paused" : (payload.isPlaying ? "playing" : "inactive"));
+
+        const paused = playbackState === "paused";
+
+        if (paused) {
+          this.songTitleEl.innerHTML = this.esc(title) + ' <span class="paused-badge">Paused</span>';
+        } else {
+          this.songTitleEl.textContent = title;
+        }
+
+        this.songArtistEl.textContent = artist;
+
+        const url = track.albumArtUrl || track.album_art_url || track.albumArtURL || null;
+        this.albumCoverEl.src = url || this.placeholderCover();
+
+        if (playbackState === "playing") this.syncTextEl.textContent = "Synced with Spotify";
+        else if (playbackState === "paused") this.syncTextEl.textContent = "Paused";
+        else this.syncTextEl.textContent = "Inactive";
+      }
+
+      stopPolling() {
+        if (this.pollTimer) clearInterval(this.pollTimer);
+        this.pollTimer = null;
+      }
+
+      setPollInterval(ms) {
+        if (this.pollTimer) clearInterval(this.pollTimer);
+        this.pollTimer = setInterval(() => this.fetchLyrics(false), ms);
+      }
+
+      renderAuthRequired() {
+        this.setHeaderTrack({ track: null, playbackState: "inactive", isPlaying: false });
+        this.syncTextEl.textContent = "Reconnect required";
+        this.lyricsContainer.innerHTML =
+          '<div class="loading">Not authenticated.<br/><br/>' +
+          '<a href="' + this.apiBase + '/auth/login" style="color:#1db954; font-weight:700; text-decoration:none;">' +
+          "Reconnect Spotify</a></div>";
+      }
+
+      async fetchLyrics(forceRender) {
+        try {
+          const url =
+            this.apiBase +
+            "/lyrics/current/synced?lang=" +
+            encodeURIComponent(this.currentLanguage);
+
+          const r = await fetch(url, {
+            cache: "no-store",
+            credentials: "include",
+          });
+
+          if (r.status === 401) {
+            this.stopPolling();
+            this.renderAuthRequired();
+            return;
+          }
+
+          const data = await r.json();
+          this.render(data, forceRender);
+        } catch (error) {
+          this.render({ error: "Fetch failed", details: String(error) }, true);
+        }
+      }
+
+      render(payload, forceRender) {
+        if (!payload || payload.error) {
+          const msg = this.esc((payload && (payload.details || payload.error)) || "Unknown error");
+          this.lyricsContainer.innerHTML = '<div class="loading">' + msg + "</div>";
+          return;
+        }
+
+        const trackKey = payload.track ? (payload.track.trackId || payload.track.id || null) : null;
+        const activeKey = payload.lyrics && payload.lyrics.activeLine ? payload.lyrics.activeLine.t_ms : null;
+
+        const playbackKey =
+          payload.playbackState ??
+          (payload.isPlaying === false ? "paused" : (payload.isPlaying ? "playing" : "inactive"));
+
+        const isInactive = playbackKey === "inactive" || !payload.track;
+
+        if (isInactive) {
+          this.setHeaderTrack(payload);
+          this.lyricsContainer.innerHTML = '<div class="loading">Start playing a song on Spotify…</div>';
+          this.setPollInterval(this.pollIntervalActive);
+          this.lastTrackKey = trackKey;
+          this.lastActiveKey = activeKey;
+          this.lastPlaybackKey = playbackKey;
+          return;
+        }
+
+        if (!forceRender && trackKey === this.lastTrackKey && activeKey === this.lastActiveKey && playbackKey === this.lastPlaybackKey) {
+          return;
+        }
+
+        this.setHeaderTrack(payload);
+
+        const lyrics = payload.lyrics;
+        if (!lyrics || !lyrics.isSynced) {
+          this.lyricsContainer.innerHTML = '<div class="loading">No synced lyrics available for this track.</div>';
+          return;
+        }
+
+        const windowLines = lyrics.window || [];
+        const activeLine = lyrics.activeLine;
+        const paused = playbackKey === "paused";
+
+        let html = "";
+        for (let i = 0; i < windowLines.length; i++) {
+          const line = windowLines[i];
+          const isActive = activeLine && line.t_ms === activeLine.t_ms;
+
+          html +=
+            '<div class="lyric-pair ' +
+            (isActive ? "active " : "") +
+            (paused && isActive ? "paused" : "") +
+            '" data-tms="' +
+            line.t_ms +
+            '">' +
+            '<div class="lyric-line">' +
+            this.esc(line.original) +
+            "</div>" +
+            '<div class="lyric-line">' +
+            this.esc(line.translated || "") +
+            "</div>" +
+            "</div>";
+        }
+
+        this.lyricsContainer.innerHTML = html || '<div class="loading">No lines in window.</div>';
+
+        if (paused) this.setPollInterval(this.pollIntervalPaused);
+        else this.setPollInterval(this.pollIntervalActive);
+
+        const newActiveKey = activeLine ? activeLine.t_ms : null;
+
+        if (!paused && newActiveKey !== null && newActiveKey !== this.lastActiveKey) {
+          const el = this.lyricsContainer.querySelector('[data-tms="' + newActiveKey + '"]');
+          if (el) this.scrollToElement(el);
+        }
+
+        this.lastTrackKey = trackKey;
+        this.lastActiveKey = newActiveKey;
+        this.lastPlaybackKey = playbackKey;
+      }
+
+      scrollToElement(el) {
+        const container = this.lyricsContainer;
+        const headerOffset = 12;
+        const top =
+          el.offsetTop -
+          container.clientHeight / 2 +
+          el.clientHeight / 2 -
+          headerOffset;
+
+        container.scrollTo({
+          top: Math.max(0, top),
+          behavior: "smooth",
+        });
+      }
+
+      startPolling() {
+        this.fetchLyrics(true);
+        this.setPollInterval(this.pollIntervalActive);
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      new LingualSync();
+    });
+  </script>
+</body>
+</html>
