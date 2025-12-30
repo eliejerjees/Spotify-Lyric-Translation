@@ -1,15 +1,19 @@
 from fastapi import FastAPI, Response, Request
-from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 import os, secrets, hashlib, base64, requests, time
 from dotenv import load_dotenv
 from lrc_parser import parse_lrc
 from sync_engine import current_line_index, window
 from typing import Optional, Tuple
+from pathlib import Path
 
 # Load environment variables early
 load_dotenv()
 
 app = FastAPI()
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # =========================
 # CACHES
@@ -78,191 +82,7 @@ def set_cookie_updates(resp_out: JSONResponse, cookie_updates: Optional[dict]) -
 # =========================
 @app.get("/karaoke", response_class=HTMLResponse)
 def karaoke_page():
-    return """
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <title>LingualSync Karaoke</title>
-    <style>
-      body {
-        background: #000;
-        color: #fff;
-        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-        margin: 0;
-        padding: 20px;
-      }
-      .topbar {
-        display: flex;
-        gap: 12px;
-        align-items: center;
-        margin-bottom: 16px;
-      }
-      select, input {
-        background: #111;
-        color: #fff;
-        border: 1px solid #333;
-        border-radius: 8px;
-        padding: 8px 10px;
-      }
-      .track {
-        color: #1DB954;
-        margin: 8px 0 18px 0;
-        font-size: 14px;
-      }
-      .line {
-        padding: 10px 12px;
-        border-radius: 10px;
-        margin: 8px 0;
-        background: #0b0b0b;
-        border: 1px solid #111;
-        transition: transform 180ms ease, background 180ms ease, border-color 180ms ease;
-      }
-      .line.active {
-        background: #141414;
-        border-color: #1DB954;
-        transform: scale(1.02);
-      }
-      .orig {
-        font-size: 14px;
-        opacity: 0.75;
-        margin-bottom: 6px;
-      }
-      .trans {
-        font-size: 22px;
-        line-height: 1.25;
-      }
-      .status {
-        font-size: 13px;
-        opacity: 0.7;
-        margin-top: 12px;
-      }
-      .muted { opacity: 0.6; }
-      .error { color: #ff6b6b; }
-    </style>
-  </head>
-  <body>
-    <div class="topbar">
-      <label class="muted">Language</label>
-      <select id="lang">
-        <option value="es">Spanish (es)</option>
-        <option value="fr">French (fr)</option>
-        <option value="ar">Arabic (ar)</option>
-        <option value="de">German (de)</option>
-        <option value="it">Italian (it)</option>
-        <option value="pt">Portuguese (pt)</option>
-        <option value="ja">Japanese (ja)</option>
-        <option value="ko">Korean (ko)</option>
-        <option value="zh-CN">Chinese (zh-CN)</option>
-      </select>
-
-      <label class="muted">Poll ms</label>
-      <input id="poll" type="number" value="500" min="200" step="100" style="width: 90px;" />
-      <button id="apply" style="background:#1DB954;color:#000;border:0;border-radius:8px;padding:8px 12px;cursor:pointer;">
-        Apply
-      </button>
-    </div>
-
-    <div class="track" id="track">Loading…</div>
-    <div id="lines"></div>
-    <div class="status" id="status"></div>
-
-    <script>
-      let timer = null;
-      let lastActiveKey = null;
-
-      function esc(s) {
-        return (s ?? "").toString()
-          .replaceAll("&", "&amp;")
-          .replaceAll("<", "&lt;")
-          .replaceAll(">", "&gt;");
-      }
-
-      function render(payload) {
-        const trackEl = document.getElementById("track");
-        const linesEl = document.getElementById("lines");
-        const statusEl = document.getElementById("status");
-
-        if (!payload || payload.error) {
-          trackEl.innerHTML = "<span class='error'>Error</span>";
-          linesEl.innerHTML = "";
-          statusEl.textContent = payload?.details || payload?.error || "Unknown error";
-          return;
-        }
-
-        if (!payload.isPlaying || !payload.track) {
-          trackEl.textContent = "Not playing";
-          linesEl.innerHTML = "";
-          statusEl.textContent = "";
-          return;
-        }
-
-        const t = payload.track;
-        trackEl.textContent = `${t.artist} — ${t.title} (${t.album})`;
-
-        const lyrics = payload.lyrics;
-        if (!lyrics || !lyrics.isSynced) {
-          linesEl.innerHTML = "<div class='muted'>No synced lyrics available for this track.</div>";
-          statusEl.textContent = "";
-          return;
-        }
-
-        const active = lyrics.activeLine;
-        const activeKey = active ? active.t_ms : null;
-
-        // Build lines
-        const windowLines = lyrics.window || [];
-        let html = "";
-        for (const ln of windowLines) {
-          const isActive = (active && ln.t_ms === active.t_ms);
-          html += `
-            <div class="line ${isActive ? "active" : ""}">
-              <div class="orig">${esc(ln.original)}</div>
-              <div class="trans">${esc(ln.translated || "")}</div>
-            </div>
-          `;
-        }
-        linesEl.innerHTML = html;
-
-        // Simple "transition": scroll into view when active changes
-        if (activeKey !== null && activeKey !== lastActiveKey) {
-          lastActiveKey = activeKey;
-          const activeEl = document.querySelector(".line.active");
-          if (activeEl) activeEl.scrollIntoView({ block: "center", behavior: "smooth" });
-        }
-
-        statusEl.textContent = `progressMs=${payload.progressMs} activeIndex=${lyrics.activeIndex}`;
-      }
-
-      async function tick() {
-        const lang = document.getElementById("lang").value;
-        try {
-          const r = await fetch(`/lyrics/current/synced?lang=${encodeURIComponent(lang)}`, { cache: "no-store" });
-          const data = await r.json();
-          render(data);
-        } catch (e) {
-          render({ error: "Fetch failed", details: String(e) });
-        }
-      }
-
-      function start() {
-        if (timer) clearInterval(timer);
-        const pollMs = Math.max(200, Number(document.getElementById("poll").value || 500));
-        tick();
-        timer = setInterval(tick, pollMs);
-      }
-
-      document.getElementById("apply").addEventListener("click", () => {
-        lastActiveKey = null; // reset scroll behavior
-        start();
-      });
-
-      // Start immediately
-      start();
-    </script>
-  </body>
-</html>
-"""
+    return FileResponse(Path("static") / "karaoke.html")
 
 # =========================
 # BASIC ENDPOINTS
@@ -681,7 +501,13 @@ def lyrics_current_synced(request: Request):
     # 3) Sync
     t_list = [ln["t_ms"] for ln in lines]
     idx = current_line_index(t_list, progress_ms)
-    w = window(lines, idx, before=2, after=6)
+
+    before = 2
+    after = 6
+    w = window(lines, idx, before=before, after=after)
+
+    # global index of w[0] inside `lines`
+    window_start_index = max(0, idx - before) if idx >= 0 else 0
 
     payload = {
         "isPlaying": bool(data.get("is_playing")),
@@ -691,6 +517,7 @@ def lyrics_current_synced(request: Request):
             "source": "lrclib",
             "isSynced": True,
             "activeIndex": idx,
+            "windowStartIndex": window_start_index,
             "activeLine": None if idx < 0 else lines[idx],
             "window": w,
         },

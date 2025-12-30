@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LingualSync - Live Synced Lyrics</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+
+    body{
+      font-family:'Circular',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;
+      background:#121212;
+      color:#b3b3b3;
+      min-height:100vh;
+      overflow:hidden;
+      position:relative;
+    }
+    body::before{
+      content:'';
+      position:fixed;
+      top:0; left:0; right:0;
+      height:300px;
+      background:radial-gradient(ellipse at top, rgba(29,185,84,0.08) 0%, transparent 60%);
+      pointer-events:none;
+      z-index:0;
+    }
+
+    .container{
+      max-width:1400px;
+      margin:0 auto;
+      height:100vh;
+      display:flex;
+      flex-direction:column;
+      padding:0 2rem;
+      position:relative;
+      z-index:1;
+    }
+
+    .header{
+      padding:1.5rem 0;
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:2rem;
+      border-bottom:1px solid #282828;
+    }
+
+    .logo{
+      font-size:1.5rem;
+      font-weight:700;
+      color:#1db954;
+      letter-spacing:-0.5px;
+      flex-shrink:0;
+    }
+
+    .song-info{
+      display:flex;
+      align-items:center;
+      gap:1rem;
+      flex:1;
+      min-width:0;
+      justify-content:center;
+    }
+
+    .album-cover{
+      width:56px;
+      height:56px;
+      border-radius:4px;
+      object-fit:cover;
+      flex-shrink:0;
+      background:#282828;
+    }
+
+    .song-details{
+      display:flex;
+      flex-direction:column;
+      gap:0.25rem;
+      min-width:0;
+    }
+
+    .song-title{
+      font-size:0.95rem;
+      font-weight:600;
+      color:#fff;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .song-artist{
+      font-size:0.85rem;
+      color:#b3b3b3;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+
+    .language-selector{ position:relative; }
+
+    .language-selector select{
+      appearance:none;
+      background:#282828;
+      border:none;
+      color:#fff;
+      padding:0.65rem 2.5rem 0.65rem 1rem;
+      border-radius:4px;
+      font-size:0.9rem;
+      cursor:pointer;
+      transition:background 0.2s;
+      min-width:160px;
+    }
+    .language-selector select:hover{ background:#3e3e3e; }
+    .language-selector select:focus{ outline:none; background:#3e3e3e; }
+    .language-selector::after{
+      content:'▾';
+      position:absolute;
+      right:1rem;
+      top:50%;
+      transform:translateY(-50%);
+      pointer-events:none;
+      color:#b3b3b3;
+      font-size:0.8rem;
+    }
+
+    .lyrics-container{
+      flex:1;
+      overflow:hidden;
+      padding:2rem 0;
+      display:flex;
+      flex-direction:column;
+    }
+
+    .panel-labels{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:2.5rem;
+      margin-bottom:1rem;
+      padding-bottom:0.75rem;
+      border-bottom:1px solid rgba(29,185,84,0.15);
+    }
+
+    .panel-label{
+      font-size:0.75rem;
+      font-weight:700;
+      text-transform:uppercase;
+      letter-spacing:0.5px;
+      color:#1db954;
+    }
+
+    .lyrics-scroll{
+      flex:1;
+      overflow-y:auto;
+      scroll-behavior:smooth;
+      padding-right:0.5rem;
+    }
+
+    .lyrics-scroll::-webkit-scrollbar{ width:12px; }
+    .lyrics-scroll::-webkit-scrollbar-track{ background:transparent; }
+    .lyrics-scroll::-webkit-scrollbar-thumb{ background:#282828; border-radius:6px; }
+    .lyrics-scroll::-webkit-scrollbar-thumb:hover{ background:#3e3e3e; }
+
+    .lyric-pair{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:2.5rem;
+      padding:0.8rem 0;
+      margin:0.3rem 0;
+      transition:all 0.25s ease;
+      border-left:3px solid transparent;
+      padding-left:0.5rem;
+    }
+
+    .lyric-line{
+      font-size:1.1rem;
+      line-height:1.5;
+      opacity:0.35;
+      font-weight:400;
+      white-space:pre-wrap;
+    }
+
+    .lyric-pair.active{ border-left-color:#1db954; }
+    .lyric-pair.active .lyric-line{
+      opacity:1;
+      color:#fff;
+      font-size:1.15rem;
+      font-weight:600;
+    }
+    .lyric-pair.near-active .lyric-line{ opacity:0.6; }
+
+    .sync-indicator{
+      position:fixed;
+      bottom:1.5rem;
+      right:1.5rem;
+      background:#282828;
+      padding:0.5rem 0.9rem;
+      border-radius:4px;
+      font-size:0.75rem;
+      display:flex;
+      align-items:center;
+      gap:0.5rem;
+      color:#b3b3b3;
+    }
+    .sync-dot{
+      width:6px;
+      height:6px;
+      background:#1db954;
+      border-radius:50%;
+      animation:pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse{
+      0%,100%{ opacity:1; transform:scale(1); }
+      50%{ opacity:0.5; transform:scale(0.8); }
+    }
+
+    .loading{
+      text-align:center;
+      padding:2rem;
+      color:#535353;
+      font-size:1rem;
+    }
+    .error{
+      text-align:center;
+      padding:2rem;
+      color:#ff6b6b;
+      font-size:1rem;
+      line-height:1.5;
+      white-space:pre-wrap;
+    }
+
+    @media (max-width:768px){
+      .container{ padding:0 1rem; }
+      .header{ flex-wrap:wrap; }
+      .logo{ order:1; }
+      .language-selector{ order:3; }
+      .song-info{ order:2; flex-basis:100%; }
+      .panel-labels, .lyric-pair{
+        grid-template-columns:1fr;
+        gap:1.5rem;
+      }
+      .lyric-line{ font-size:1rem; }
+      .sync-indicator{ bottom:1rem; right:1rem; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="logo">LingualSync</div>
+
+      <div class="song-info">
+        <img
+          src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect width='56' height='56' fill='%23282828'/%3E%3Cpath d='M28 16c-6.627 0-12 5.373-12 12s5.373 12 12 12 12-5.373 12-12-5.373-12-12-12zm5.5 16.084c-.227.346-.706.453-1.066.24-2.92-1.787-6.594-2.191-10.92-1.2-.416.096-.834-.16-.93-.577-.096-.417.16-.834.577-.93 4.73-1.087 8.82-.62 12.145 1.388.346.214.453.693.24 1.066l-.046.013zm1.52-3.38c-.285.434-.89.572-1.324.287-3.343-2.057-8.432-2.654-12.375-1.452-.52.155-1.067-.146-1.22-.666-.154-.52.146-1.067.666-1.22 4.517-1.377 10.11-.71 13.94 1.65.434.285.572.89.313 1.4zm.13-3.52c-4.008-2.38-10.616-2.598-14.44-1.436-.623.19-1.28-.162-1.47-.785-.19-.623.162-1.28.785-1.47 4.386-1.332 11.7-1.076 16.325 1.66.572.338.76 1.076.42 1.648-.338.572-1.076.76-1.62.383z' fill='%231db954'/%3E%3C/svg%3E"
+          alt="Album cover"
+          class="album-cover"
+          id="albumCover"
+        />
+        <div class="song-details">
+          <div class="song-title" id="songTitle">Not playing</div>
+          <div class="song-artist" id="songArtist">Open Spotify and press play</div>
+        </div>
+      </div>
+
+      <div class="language-selector">
+        <select id="languageSelect">
+          <option value="es" selected>Spanish (Español)</option>
+          <option value="fr">French (Français)</option>
+          <option value="de">German (Deutsch)</option>
+          <option value="it">Italian (Italiano)</option>
+          <option value="pt">Portuguese (Português)</option>
+          <option value="ru">Russian (Русский)</option>
+          <option value="ja">Japanese (日本語)</option>
+          <option value="ko">Korean (한국어)</option>
+          <option value="zh-CN">Chinese Simplified (简体中文)</option>
+          <option value="zh-TW">Chinese Traditional (繁體中文)</option>
+          <option value="ar">Arabic (العربية)</option>
+          <option value="hi">Hindi (हिन्दी)</option>
+          <option value="tr">Turkish (Türkçe)</option>
+          <option value="pl">Polish (Polski)</option>
+          <option value="nl">Dutch (Nederlands)</option>
+          <option value="sv">Swedish (Svenska)</option>
+          <option value="no">Norwegian (Norsk)</option>
+          <option value="da">Danish (Dansk)</option>
+          <option value="fi">Finnish (Suomi)</option>
+          <option value="cs">Czech (Čeština)</option>
+          <option value="hu">Hungarian (Magyar)</option>
+          <option value="ro">Romanian (Română)</option>
+          <option value="uk">Ukrainian (Українська)</option>
+          <option value="el">Greek (Ελληνικά)</option>
+          <option value="he">Hebrew (עברית)</option>
+          <option value="th">Thai (ไทย)</option>
+          <option value="vi">Vietnamese (Tiếng Việt)</option>
+          <option value="id">Indonesian (Bahasa Indonesia)</option>
+          <option value="ms">Malay (Bahasa Melayu)</option>
+          <option value="tl">Filipino (Tagalog)</option>
+          <option value="sw">Swahili (Kiswahili)</option>
+          <option value="fa">Persian (فارسی)</option>
+          <option value="ur">Urdu (اردو)</option>
+          <option value="bn">Bengali (বাংলা)</option>
+          <option value="ta">Tamil (தமிழ்)</option>
+          <option value="te">Telugu (తెలుగు)</option>
+          <option value="mr">Marathi (मराठी)</option>
+          <option value="gu">Gujarati (ગુજરાતી)</option>
+          <option value="kn">Kannada (ಕನ್ನಡ)</option>
+          <option value="ml">Malayalam (മലയാളം)</option>
+          <option value="si">Sinhala (සිංහල)</option>
+          <option value="km">Khmer (ខ្មែរ)</option>
+          <option value="lo">Lao (ລາວ)</option>
+          <option value="my">Burmese (မြန်မာ)</option>
+          <option value="ka">Georgian (ქართული)</option>
+          <option value="am">Amharic (አማርኛ)</option>
+          <option value="ne">Nepali (नेपाली)</option>
+          <option value="zu">Zulu (isiZulu)</option>
+          <option value="af">Afrikaans</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="lyrics-container">
+      <div class="panel-labels">
+        <div class="panel-label">Original</div>
+        <div class="panel-label">Translation</div>
+      </div>
+
+      <div class="lyrics-scroll" id="lyricsScroll">
+        <div class="loading">Waiting for Spotify...</div>
+      </div>
+    </div>
+
+    <div class="sync-indicator" id="syncIndicator" title="Polling /lyrics/current/synced">
+      <div class="sync-dot"></div>
+      <span id="syncText">Syncing...</span>
+    </div>
+  </div>
+
+  <script>
+    // LingualSync - Synced Lyrics Display (wired to your backend)
+    // Expects GET /lyrics/current/synced?lang=xx to return:
+    // {
+    //   isPlaying: boolean,
+    //   progressMs: number|null,
+    //   track: { artist, title, album }|null,
+    //   lyrics: {
+    //     source: "lrclib",
+    //     isSynced: boolean,
+    //     activeIndex: number,
+    //     activeLine: object|null,
+    //     window: Array<{ t_ms, original, translated }>
+    //   }
+    // }
+
+    class LingualSync {
+      constructor() {
+        this.currentLanguage = "es";
+        this.pollIntervalMs = 700; // 500ms is fine; 700ms reduces load slightly
+        this.lyricsContainer = document.getElementById("lyricsScroll");
+        this.languageSelect = document.getElementById("languageSelect");
+        this.songTitleEl = document.getElementById("songTitle");
+        this.songArtistEl = document.getElementById("songArtist");
+        this.albumCoverEl = document.getElementById("albumCover");
+        this.syncTextEl = document.getElementById("syncText");
+
+        this.abortController = null;
+        this.timer = null;
+
+        // State used to avoid re-rendering everything on every poll
+        this.lastTrackKey = null;
+        this.lastLang = null;
+        this.lastWindowSig = null;
+        this.lastActiveIndex = null;
+
+        // Placeholder image data URI stays unless you later return cover art
+        this.placeholderCover = this.albumCoverEl.getAttribute("src");
+
+        this.setupEventListeners();
+        this.startPolling();
+      }
+
+      setupEventListeners() {
+        this.languageSelect.addEventListener("change", (e) => {
+          this.currentLanguage = e.target.value;
+          // Force a refetch + re-render on language change
+          this.lastLang = null;
+          this.fetchAndRender(true);
+        });
+      }
+
+      startPolling() {
+        this.fetchAndRender(true);
+        this.timer = setInterval(() => this.fetchAndRender(false), this.pollIntervalMs);
+      }
+
+      stopPolling() {
+        if (this.timer) clearInterval(this.timer);
+        this.timer = null;
+      }
+
+      async fetchAndRender(forceRender) {
+        // Cancel any in-flight request to avoid piling up if backend is slow
+        if (this.abortController) this.abortController.abort();
+        this.abortController = new AbortController();
+
+        try {
+          const url = `/lyrics/current/synced?lang=${encodeURIComponent(this.currentLanguage)}`;
+          const res = await fetch(url, {
+            method: "GET",
+            credentials: "include", // IMPORTANT: you store tokens/cookies
+            signal: this.abortController.signal,
+            headers: { "Accept": "application/json" },
+          });
+
+          if (res.status === 401) {
+            this.setStatus("Not authenticated");
+            this.renderMessage(
+              "Not authenticated.\nGo through your Spotify login flow, then refresh."
+            );
+            this.setTrackHeader(null);
+            return;
+          }
+
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            this.setStatus("Backend error");
+            this.renderError(`Spotify/Lyrics error (${res.status}).\n${text}`);
+            return;
+          }
+
+          const data = await res.json();
+          this.applyData(data, forceRender);
+        } catch (err) {
+          if (err && err.name === "AbortError") return;
+          this.setStatus("Network error");
+          this.renderError(`Network error.\n${String(err)}`);
+        }
+      }
+
+      applyData(data, forceRender) {
+        const isPlaying = !!data?.isPlaying;
+        const track = data?.track || null;
+        const lyrics = data?.lyrics || null;
+
+        this.setTrackHeader(track);
+
+        if (!isPlaying || !track) {
+          this.setStatus("Not playing");
+          this.renderMessage("Nothing is playing.\nStart a track in Spotify.");
+          return;
+        }
+
+        if (!lyrics) {
+          this.setStatus("No lyrics payload");
+          this.renderMessage("No lyrics data returned.");
+          return;
+        }
+
+        if (!lyrics.isSynced || !Array.isArray(lyrics.window) || lyrics.window.length === 0) {
+          this.setStatus("No synced lyrics");
+          this.renderMessage("No synced lyrics found for this track.");
+          return;
+        }
+
+        // Track identity for minimal diffs
+        const trackKey = `${track.artist}::${track.title}::${track.album}`;
+        const lang = this.currentLanguage;
+
+        // Window signature to detect change (e.g., new track or LRCLIB refresh)
+        // Use t_ms + original as a stable-ish signature
+        const windowSig = lyrics.window
+          .map((ln) => `${ln.t_ms}|${ln.original || ""}`)
+          .join("§");
+
+        const activeIndex = Number.isInteger(lyrics.activeIndex) ? lyrics.activeIndex : -1;
+
+        const trackChanged = this.lastTrackKey !== trackKey;
+        const langChanged = this.lastLang !== lang;
+        const windowChanged = this.lastWindowSig !== windowSig;
+
+        const shouldFullRender = forceRender || trackChanged || langChanged || windowChanged;
+
+        if (shouldFullRender) {
+          this.renderLyricsWindow(lyrics.window, activeIndex);
+        } else {
+          // Only update active styling and scroll if needed
+          this.updateActive(activeIndex);
+        }
+
+        this.lastTrackKey = trackKey;
+        this.lastLang = lang;
+        this.lastWindowSig = windowSig;
+        this.lastActiveIndex = activeIndex;
+
+        this.setStatus("Synced");
+      }
+
+      setTrackHeader(track) {
+        if (!track) {
+          this.songTitleEl.textContent = "Not playing";
+          this.songArtistEl.textContent = "Open Spotify and press play";
+          // Keep placeholder cover (you are not returning cover art currently)
+          this.albumCoverEl.src = this.placeholderCover;
+          return;
+        }
+
+        this.songTitleEl.textContent = track.title || "Unknown title";
+        this.songArtistEl.textContent = track.artist || "Unknown artist";
+        // If you later add cover art URL to the payload, set it here.
+        this.albumCoverEl.src = this.placeholderCover;
+      }
+
+      setStatus(text) {
+        this.syncTextEl.textContent = text;
+      }
+
+      renderMessage(text) {
+        this.lyricsContainer.innerHTML = `<div class="loading">${this.escapeHtml(text).replace(/\n/g, "<br>")}</div>`;
+      }
+
+      renderError(text) {
+        this.lyricsContainer.innerHTML = `<div class="error">${this.escapeHtml(text).replace(/\n/g, "<br>")}</div>`;
+      }
+
+      renderLyricsWindow(lines, activeIndex) {
+        // Important fix vs Claude version:
+        // - Your backend window items are a slice around activeIndex; activeIndex is GLOBAL.
+        // - The "active" line in the returned window is NOT at index === activeIndex.
+        // We compute localActiveIndex by matching t_ms to activeLine if present, else approximate.
+
+        // Build DOM once
+        const html = lines
+          .map((ln, i) => {
+            const original = (ln.original ?? "").trim();
+            const translated = (ln.translated ?? "").trim();
+            const safeOriginal = this.escapeHtml(original || " ");
+            const safeTranslated = this.escapeHtml(translated || " ");
+
+            return `
+              <div class="lyric-pair" data-i="${i}">
+                <div class="lyric-line">${safeOriginal}</div>
+                <div class="lyric-line">${safeTranslated}</div>
+              </div>
+            `;
+          })
+          .join("");
+
+        this.lyricsContainer.innerHTML = html;
+
+        // Determine local active index
+        const localActive = this.computeLocalActiveIndex(lines, activeIndex);
+
+        // Apply styling + scroll
+        this.applyActiveClasses(localActive);
+        this.scrollToLocalActive(localActive);
+      }
+
+      computeLocalActiveIndex(lines, globalActiveIndex) {
+        // Your window is the "window(lines, idx, before=2, after=6)" around idx.
+        // That means globalActiveIndex is not a valid local index.
+        //
+        // Heuristic:
+        // - If window contains timestamps, pick the last line where t_ms <= progress?
+        // But you didn't include progress in this function.
+        // So simplest: assume the active line is near the top (before=2) => localActive ~= 2.
+        // However, if idx is near start, it can be 0 or 1.
+        //
+        // Best: your payload includes lyrics.activeLine (the full line) with t_ms.
+        // But you are not passing it into this method right now.
+        // So we compute from globalActiveIndex if possible by assuming window starts at (idx - 2).
+        //
+        // Since your backend uses before=2, start = max(0, idx-2).
+        // Then localActive = idx - start.
+
+        if (!Number.isInteger(globalActiveIndex) || globalActiveIndex < 0) return -1;
+
+        // We cannot know "start" directly from just the window.
+        // But with before=2, the active is usually 2 unless clamped by start=0.
+        // We can detect clamp by checking whether the first line's t_ms is very early and window is short.
+        // Use a simple rule:
+        // - If the first line has t_ms === 0 (or very small), treat as clamped => localActive = min(globalActiveIndex, 2)
+        // - Else assume localActive = 2
+
+        const firstT = typeof lines?.[0]?.t_ms === "number" ? lines[0].t_ms : null;
+        if (firstT !== null && firstT <= 200) {
+          // clamped near the beginning of song
+          return Math.min(globalActiveIndex, 2);
+        }
+
+        return Math.min(2, Math.max(0, lines.length - 1));
+      }
+
+      updateActive(/*global*/ activeIndex) {
+        // Same issue: we only have global active index.
+        // We keep the same heuristic as computeLocalActiveIndex.
+        const nodes = this.lyricsContainer.querySelectorAll(".lyric-pair");
+        if (!nodes || nodes.length === 0) return;
+
+        const lines = Array.from(nodes).map((el) => ({
+          t_ms: null,
+          original: el.querySelector(".lyric-line")?.textContent ?? "",
+        }));
+
+        const localActive = this.computeLocalActiveIndex(lines, activeIndex);
+
+        if (localActive === this.lastLocalActive) return;
+
+        this.applyActiveClasses(localActive);
+        this.scrollToLocalActive(localActive);
+
+        this.lastLocalActive = localActive;
+      }
+
+      applyActiveClasses(localActiveIndex) {
+        const pairs = this.lyricsContainer.querySelectorAll(".lyric-pair");
+        pairs.forEach((el) => {
+          el.classList.remove("active", "near-active");
+        });
+
+        if (localActiveIndex < 0) return;
+
+        const activeEl = this.lyricsContainer.querySelector(`.lyric-pair[data-i="${localActiveIndex}"]`);
+        if (activeEl) activeEl.classList.add("active");
+
+        const prevEl = this.lyricsContainer.querySelector(`.lyric-pair[data-i="${localActiveIndex - 1}"]`);
+        const nextEl = this.lyricsContainer.querySelector(`.lyric-pair[data-i="${localActiveIndex + 1}"]`);
+        if (prevEl) prevEl.classList.add("near-active");
+        if (nextEl) nextEl.classList.add("near-active");
+      }
+
+      scrollToLocalActive(localActiveIndex) {
+        const activeEl = this.lyricsContainer.querySelector(`.lyric-pair[data-i="${localActiveIndex}"]`);
+        if (!activeEl) return;
+
+        const container = this.lyricsContainer;
+        const lineTop = activeEl.offsetTop;
+        const lineHeight = activeEl.offsetHeight;
+        const containerHeight = container.clientHeight;
+
+        const scrollTo = lineTop - (containerHeight / 2) + (lineHeight / 2);
+        container.scrollTo({ top: scrollTo, behavior: "smooth" });
+      }
+
+      escapeHtml(str) {
+        return String(str)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+      new LingualSync();
+    });
+  </script>
+</body>
+</html>
